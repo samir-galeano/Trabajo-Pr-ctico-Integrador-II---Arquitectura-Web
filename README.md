@@ -10,6 +10,6 @@ Descomposición, contenerización, despliegue distribuido, resiliencia y observa
 
 * Jazmin Figueredo
 * Fernando Servian
-* Samyr Galeano
+* Samir Galeano
 
 Docente: Rodrigo Benitez
