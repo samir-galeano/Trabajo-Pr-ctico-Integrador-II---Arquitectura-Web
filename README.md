@@ -1,4 +1,4 @@
-# Trabajo-Practico-Integrador-II---Arquitectura-Web
+# Trabajo-Practico-Integrador-II - Arquitectura-Web
 
 Trabajo Práctico Integrador II de la materia Electiva III — Arquitectura Web (FP-UNA, 2.º Semestre 2026).
 
