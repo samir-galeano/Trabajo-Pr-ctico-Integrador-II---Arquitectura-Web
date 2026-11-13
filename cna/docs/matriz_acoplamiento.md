@@ -20,7 +20,7 @@ El objetivo es reconocer las tablas compartidas que generan acoplamiento entre m
 
 
 
-Se consideran los siguientes módulos funcionales:
+Se consideran los siguientes seis módulos funcionales:
 
 
 
@@ -32,17 +32,29 @@ Se consideran los siguientes módulos funcionales:
 
 4\. Export
 
-5\. Images/attachments
+5\. Images/Attachments
 
-6\. Users/permissions
-
-
-
-\## 3. Matriz de acoplamiento
+6\. Users/Permissions
 
 
 
-La marca X indica que existe una dependencia funcional identificada mediante el análisis del esquema de la base de datos y las relaciones del código fuente.
+\## 3. Criterio de clasificación
+
+
+
+La marca X indica que una tabla participa en las operaciones o relaciones funcionales identificadas para el módulo.
+
+
+
+La ausencia de una marca indica que no se identificó una dependencia funcional suficientemente justificada en el análisis realizado.
+
+
+
+Se distinguen las tablas funcionales de las tablas de infraestructura, configuración y soporte interno de BookStack.
+
+
+
+\## 4. Matriz de acoplamiento
 
 
 
@@ -50,111 +62,221 @@ La marca X indica que existe una dependencia funcional identificada mediante el 
 
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
 
-| entities | X | X | X | X | | X |
+| activities | | | X | | | |
+
+| api\_tokens | | | | | | X |
+
+| attachments | X | | | X | X | |
+
+| bookshelves\_books | X | | | X | | |
+
+| cache | | | | | | |
+
+| comments | X | | | | | |
+
+| deletions | X | | | | | |
+
+| email\_confirmations | | | | | | X |
+
+| entities | X | X | X | X | X | X |
 
 | entity\_container\_data | X | X | | X | | |
 
 | entity\_page\_data | X | X | | X | | |
 
-| page\_revisions | X | | X | X | | |
+| entity\_permissions | X | | | | | X |
 
-| bookshelves\_books | X | | | X | | |
+| failed\_jobs | | | | | | |
 
-| search\_terms | | X | | | | |
+| favourites | X | | | | | X |
 
-| tags | X | X | | X | | |
+| images | X | | | X | X | |
 
-| activities | | | X | | | X |
+| imports | X | | | | | |
 
-| views | | X | X | | | |
+| jobs | | | | | | |
 
-| comments | | X | X | | | |
+| joint\_permissions | X | | | | X | X |
 
-| deletions | | | X | | | |
+| mention\_history | X | | | | | X |
 
-| favourites | | | X | | | X |
+| mfa\_values | | | | | | X |
 
-| watches | | | X | | | X |
+| migrations | | | | | | |
 
-| references | X | | X | | | |
+| page\_revisions | X | | | X | | |
 
-| slug\_history | X | | X | | | |
-
-| images | X | | | X | X | X |
-
-| attachments | X | | | X | X | |
-
-| imports | | | | X | | |
-
-| users | | X | X | | | X |
-
-| roles | | | | | | X |
-
-| role\_user | | | | | | X |
-
-| role\_permissions | | | | | | X |
+| password\_resets | | | | | | X |
 
 | permission\_role | | | | | | X |
 
-| entity\_permissions | | | | | | X |
+| references | X | | | | | |
 
-| joint\_permissions | | | X | | X | X |
+| roles | | | | | | X |
 
+| role\_permissions | | | | | | X |
 
+| role\_user | | | | | | X |
 
-\*\*Nota:\*\* Esta matriz representa dependencias funcionales directas e indirectas identificadas durante la inspección. No implica que todos los módulos escriban directamente en todas las tablas marcadas.
+| search\_terms | | X | | | | |
 
+| sessions | | | | | | X |
 
+| settings | | | | | | |
 
-\## 4. Tablas compartidas y acoplamiento
+| slug\_history | X | | | | | |
 
+| social\_accounts | | | | | | X |
 
+| sort\_rules | X | | | | | |
 
-\### entities
+| tags | X | X | | X | | |
 
+| users | X | | X | | X | X |
 
+| user\_invites | | | | | | X |
 
-Es una tabla central del modelo de entidades de BookStack. Se relaciona con libros, capítulos, páginas y estanterías. También participa en las relaciones polimórficas utilizadas por búsqueda, actividad y permisos.
+| views | X | | | | | X |
 
+| watches | X | | | | | X |
 
+| webhooks | | | | | | |
 
-Su dependencia transversal dificulta extraer estos módulos sin definir contratos e interfaces de integración.
-
-
-
-\### users
-
-
-
-Se relaciona con roles, actividad, propiedad de entidades y otras funcionalidades. Su utilización por diferentes contextos genera dependencia entre usuarios, seguridad y auditoría.
-
-
-
-\### tags
+| webhook\_tracked\_events | | | | | | |
 
 
 
-Las etiquetas están asociadas a entidades y son utilizadas por la indexación de búsqueda y los procesos de exportación.
+\*\*Aclaración:\*\* las marcas representan dependencias funcionales identificadas a partir del esquema y las relaciones del código fuente. No significan necesariamente que cada módulo ejecute operaciones de escritura sobre todas las tablas marcadas.
 
 
 
-\### images y attachments
+Las tablas sin marcas corresponden a infraestructura, configuración o funcionalidades auxiliares que no se asignaron directamente a los seis módulos analizados.
 
 
 
-Los archivos multimedia se relacionan con las páginas y con los procesos de exportación. La extracción de Media debe contemplar estas relaciones y las referencias a los archivos físicos.
+\## 5. Tablas compartidas y acoplamiento
 
 
 
-\### joint\_permissions
+\### 5.1 entities
 
 
 
-Esta tabla participa en las restricciones de acceso de diferentes tipos de entidades y funcionalidades. Su utilización transversal representa un punto importante de acoplamiento.
+Es una tabla central del modelo de entidades de BookStack.
 
 
 
-\## 5. Consideraciones para la extracción
+Se relaciona con diferentes tipos de contenido, como estanterías, libros, capítulos y páginas. También participa en relaciones polimórficas utilizadas por actividades, etiquetas, comentarios, permisos y otras funcionalidades.
+
+
+
+Su dependencia transversal dificulta la extracción independiente de los módulos.
+
+
+
+\### 5.2 users
+
+
+
+Almacena la información de los usuarios y participa en diferentes funcionalidades:
+
+
+
+\- Identificación del usuario que realiza una actividad.
+
+\- Propiedad y administración del contenido.
+
+\- Asociación con roles y permisos.
+
+\- Creación y administración de recursos.
+
+\- Seguimiento de recursos y preferencias.
+
+
+
+La tabla representa una dependencia compartida entre distintos contextos.
+
+
+
+\### 5.3 tags
+
+
+
+Almacena etiquetas asociadas a entidades mediante una relación polimórfica.
+
+
+
+Es utilizada por las funcionalidades de contenido, búsqueda y exportación.
+
+
+
+\### 5.4 images y attachments
+
+
+
+Almacenan información sobre imágenes y archivos adjuntos asociados al contenido.
+
+
+
+Participan en la administración de recursos multimedia y en los procesos de exportación.
+
+
+
+La extracción del módulo Media debe contemplar las referencias a los archivos físicos y las relaciones con las entidades de BookStack.
+
+
+
+\### 5.5 entity\_permissions y joint\_permissions
+
+
+
+Estas tablas representan mecanismos de autorización sobre recursos.
+
+
+
+Su utilización debe considerarse al separar las funcionalidades de contenido y multimedia del módulo de usuarios y permisos.
+
+
+
+\## 6. Relaciones polimórficas
+
+
+
+BookStack utiliza relaciones polimórficas mediante columnas que identifican el tipo y el identificador del recurso relacionado.
+
+
+
+Algunos ejemplos identificados en el esquema:
+
+
+
+| Tabla | Columnas | Función |
+
+|---|---|---|
+
+| activities | loggable\_id, loggable\_type | Relaciona actividades con distintos recursos. |
+
+| comments | commentable\_id, commentable\_type | Relaciona comentarios con distintos recursos. |
+
+| tags | entity\_id, entity\_type | Asocia etiquetas con entidades. |
+
+| views | viewable\_id, viewable\_type | Registra visualizaciones de recursos. |
+
+| favourites | favouritable\_id, favouritable\_type | Asocia favoritos con recursos. |
+
+| watches | watchable\_id, watchable\_type | Asocia seguimientos con recursos. |
+
+| references | from\_id, from\_type, to\_id, to\_type | Representa referencias entre recursos. |
+
+| joint\_permissions | entity\_id, entity\_type | Asocia permisos compartidos con entidades. |
+
+
+
+Estas relaciones incrementan el acoplamiento porque diferentes funcionalidades pueden depender de una misma estructura de entidades.
+
+
+
+\## 7. Consideraciones para la extracción
 
 
 
@@ -168,11 +290,13 @@ Esta tabla participa en las restricciones de acceso de diferentes tipos de entid
 
 \- Las relaciones entre contextos deberán resolverse mediante contratos e integración por eventos cuando corresponda.
 
-\- Se deberá contemplar la consistencia eventual y la recuperación ante fallos.
+\- Se deberá contemplar la consistencia eventual, la idempotencia y la recuperación ante fallos.
+
+\- Las tablas de infraestructura y configuración deben analizarse por separado antes de asignarlas a un microservicio.
 
 
 
-\## 6. Limitaciones del análisis
+\## 8. Limitaciones del análisis
 
 
 
@@ -180,15 +304,19 @@ La matriz se elaboró a partir de la inspección del esquema de MariaDB y de las
 
 
 
-Las marcas representan dependencias funcionales identificadas, no un registro exhaustivo de todas las consultas SQL ejecutadas en tiempo de ejecución. Las dependencias indirectas deberán validarse durante la implementación y las pruebas de extracción.
+Las marcas representan dependencias funcionales identificadas, no un registro exhaustivo de todas las consultas SQL ejecutadas en tiempo de ejecución.
 
 
 
-\## 7. Evidencia
+Las dependencias indirectas deberán validarse durante la implementación y las pruebas de extracción.
 
 
 
-\- F5-E1: Inventario de tablas de la base de datos BookStack.
+\## 9. Evidencias
+
+
+
+\- F5-E1: Inventario y mapeo de tablas de la base de datos BookStack por módulo.
 
 \- F5-E2: Matriz de acoplamiento módulo × tabla.
 
