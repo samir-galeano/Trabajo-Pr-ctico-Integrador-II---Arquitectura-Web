@@ -1,0 +1,154 @@
+﻿
+openapi: 3.1.0
+
+info:
+  title: Media Service API
+  version: 2.0.0
+  description: API para gestionar imágenes y archivos adjuntos.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: http://localhost:8004/api/v2
+    description: Servidor local de desarrollo
+
+tags:
+  - name: Media
+    description: Operaciones para cargar, consultar y eliminar archivos multimedia.
+
+security:
+  - BearerAuth: []
+
+paths:
+  /media:
+    post:
+      tags:
+        - Media
+      summary: Subir una imagen o archivo adjunto
+      operationId: uploadMedia
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+                - media_type
+              properties:
+                file:
+                  type: string
+                  format: binary
+                media_type:
+                  type: string
+                  enum:
+                    - image
+                    - attachment
+                entity_id:
+                  type: integer
+                  minimum: 1
+                entity_type:
+                  type: string
+                  enum:
+                    - book
+                    - chapter
+                    - page
+      responses:
+        "201":
+          description: Archivo cargado correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaFile"
+        "400":
+          description: Archivo o parámetros inválidos.
+        "401":
+          description: No autenticado.
+        "413":
+          description: Archivo demasiado grande.
+        "500":
+          description: Error interno del servicio.
+
+  /media/{media_id}:
+    get:
+      tags:
+        - Media
+      summary: Consultar información de un archivo
+      operationId: getMedia
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Información del archivo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MediaFile"
+        "401":
+          description: No autenticado.
+        "404":
+          description: Archivo no encontrado.
+
+    delete:
+      tags:
+        - Media
+      summary: Eliminar un archivo
+      operationId: deleteMedia
+      parameters:
+        - name: media_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Archivo eliminado correctamente.
+        "401":
+          description: No autenticado.
+        "404":
+          description: Archivo no encontrado.
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    MediaFile:
+      type: object
+      required:
+        - media_id
+        - filename
+        - media_type
+        - created_at
+      properties:
+        media_id:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        media_type:
+          type: string
+          enum:
+            - image
+            - attachment
+        content_type:
+          type: string
+        size:
+          type: integer
+          minimum: 0
+        download_url:
+          type: string
+          format: uri
+        created_at:
+          type: string
+          format: date-time

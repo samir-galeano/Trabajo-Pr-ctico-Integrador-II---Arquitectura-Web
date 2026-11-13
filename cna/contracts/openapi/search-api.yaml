@@ -1,0 +1,135 @@
+﻿
+openapi: 3.1.0
+
+info:
+  title: Search Service API
+  version: 2.0.0
+  description: API para buscar contenido de BookStack.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: http://localhost:8001/api/v2
+    description: Servidor local de desarrollo
+
+tags:
+  - name: Search
+    description: Operaciones de búsqueda de contenido.
+  - name: Index
+    description: Operaciones de indexación de contenido.
+
+security:
+  - BearerAuth: []
+
+paths:
+  /search:
+    get:
+      tags:
+        - Search
+      summary: Buscar contenido
+      operationId: searchContent
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Texto que se desea buscar.
+          schema:
+            type: string
+        - name: type
+          in: query
+          required: false
+          description: Tipo de contenido que se desea buscar.
+          schema:
+            type: string
+            enum: [bookshelf, book, chapter, page, all]
+            default: all
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: Resultados de búsqueda.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+        "400":
+          description: Parámetros de búsqueda inválidos.
+        "401":
+          description: No autenticado.
+        "500":
+          description: Error interno del servicio.
+
+  /index:
+    post:
+      tags:
+        - Index
+      summary: Indexar contenido
+      operationId: indexContent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IndexRequest"
+      responses:
+        "202":
+          description: Solicitud de indexación aceptada.
+        "400":
+          description: Datos inválidos.
+        "401":
+          description: No autenticado.
+        "500":
+          description: Error interno del servicio.
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SearchResponse:
+      type: object
+      required: [results, total, page]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchResult"
+        total:
+          type: integer
+        page:
+          type: integer
+
+    SearchResult:
+      type: object
+      properties:
+        entity_id:
+          type: integer
+        entity_type:
+          type: string
+          enum: [bookshelf, book, chapter, page]
+        name:
+          type: string
+        description:
+          type: string
+        url:
+          type: string
+          format: uri
+
+    IndexRequest:
+      type: object
+      required: [entity_id, entity_type]
+      properties:
+        entity_id:
+          type: integer
+        entity_type:
+          type: string
+          enum: [bookshelf, book, chapter, page]

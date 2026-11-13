@@ -1,0 +1,150 @@
+﻿
+openapi: 3.1.0
+
+info:
+  title: Audit Service API
+  version: 2.0.0
+  description: API para consultar registros de auditoría del sistema.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+
+servers:
+  - url: http://localhost:8002/api/v2
+    description: Servidor local de desarrollo
+
+tags:
+  - name: Audit
+    description: Consulta de eventos y registros de auditoría.
+
+security:
+  - BearerAuth: []
+
+paths:
+  /audit-logs:
+    get:
+      tags:
+        - Audit
+      summary: Consultar registros de auditoría
+      operationId: listAuditLogs
+      parameters:
+        - name: event_type
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: user_id
+          in: query
+          required: false
+          schema:
+            type: integer
+        - name: from
+          in: query
+          required: false
+          description: Fecha y hora inicial del período.
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: Fecha y hora final del período.
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+      responses:
+        "200":
+          description: Registros de auditoría encontrados.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLogList"
+        "400":
+          description: Parámetros inválidos.
+        "401":
+          description: No autenticado.
+        "500":
+          description: Error interno del servicio.
+
+  /audit-logs/{event_id}:
+    get:
+      tags:
+        - Audit
+      summary: Consultar un registro de auditoría específico
+      operationId: getAuditLog
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Registro encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuditLog"
+        "401":
+          description: No autenticado.
+        "404":
+          description: Registro no encontrado.
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    AuditLogList:
+      type: object
+      required:
+        - items
+        - page
+        - total
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditLog"
+        page:
+          type: integer
+        total:
+          type: integer
+
+    AuditLog:
+      type: object
+      required:
+        - event_id
+        - event_type
+        - occurred_at
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+        user_id:
+          type: integer
+        entity_type:
+          type: string
+        entity_id:
+          type: integer
+        occurred_at:
+          type: string
+          format: date-time
+        request_id:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true

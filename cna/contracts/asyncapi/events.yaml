@@ -1,0 +1,198 @@
+
+asyncapi: 3.0.0
+
+info:
+  title: BookStack Microservices Events
+  version: 2.0.0
+  description: Contrato de eventos para la comunicación asíncrona entre BookStack y sus microservicios mediante NATS JetStream.
+
+defaultContentType: application/json
+
+servers:
+  development:
+    host: localhost:4222
+    protocol: nats
+    description: Servidor local de desarrollo NATS JetStream.
+
+channels:
+  contentEvents:
+    address: bookstack.content.events
+    messages:
+      pageUpdated:
+        $ref: "#/components/messages/PageUpdated"
+
+  searchEvents:
+    address: bookstack.search.events
+    messages:
+      searchIndexed:
+        $ref: "#/components/messages/SearchIndexed"
+
+  auditEvents:
+    address: bookstack.audit.events
+    messages:
+      activityRecorded:
+        $ref: "#/components/messages/ActivityRecorded"
+
+  exportEvents:
+    address: bookstack.export.events
+    messages:
+      exportCompleted:
+        $ref: "#/components/messages/ExportCompleted"
+      exportFailed:
+        $ref: "#/components/messages/ExportFailed"
+
+  mediaEvents:
+    address: bookstack.media.events
+    messages:
+      mediaUploaded:
+        $ref: "#/components/messages/MediaUploaded"
+      mediaDeleted:
+        $ref: "#/components/messages/MediaDeleted"
+
+operations:
+  publishPageUpdated:
+    action: send
+    channel:
+      $ref: "#/channels/contentEvents"
+    messages:
+      - $ref: "#/channels/contentEvents/messages/pageUpdated"
+
+  consumePageUpdatedSearch:
+    action: receive
+    channel:
+      $ref: "#/channels/contentEvents"
+    messages:
+      - $ref: "#/channels/contentEvents/messages/pageUpdated"
+
+  consumePageUpdatedAudit:
+    action: receive
+    channel:
+      $ref: "#/channels/contentEvents"
+    messages:
+      - $ref: "#/channels/contentEvents/messages/pageUpdated"
+
+  publishSearchIndexed:
+    action: send
+    channel:
+      $ref: "#/channels/searchEvents"
+    messages:
+      - $ref: "#/channels/searchEvents/messages/searchIndexed"
+
+  publishActivityRecorded:
+    action: send
+    channel:
+      $ref: "#/channels/auditEvents"
+    messages:
+      - $ref: "#/channels/auditEvents/messages/activityRecorded"
+
+  publishExportCompleted:
+    action: send
+    channel:
+      $ref: "#/channels/exportEvents"
+    messages:
+      - $ref: "#/channels/exportEvents/messages/exportCompleted"
+
+  publishExportFailed:
+    action: send
+    channel:
+      $ref: "#/channels/exportEvents"
+    messages:
+      - $ref: "#/channels/exportEvents/messages/exportFailed"
+
+  publishMediaUploaded:
+    action: send
+    channel:
+      $ref: "#/channels/mediaEvents"
+    messages:
+      - $ref: "#/channels/mediaEvents/messages/mediaUploaded"
+
+  publishMediaDeleted:
+    action: send
+    channel:
+      $ref: "#/channels/mediaEvents"
+    messages:
+      - $ref: "#/channels/mediaEvents/messages/mediaDeleted"
+
+components:
+  messages:
+    PageUpdated:
+      name: PageUpdated
+      title: Página actualizada
+      summary: Notificación emitida cuando una página de BookStack es modificada.
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    SearchIndexed:
+      name: SearchIndexed
+      title: Contenido indexado
+      summary: Notificación de finalización de la indexación de contenido.
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    ActivityRecorded:
+      name: ActivityRecorded
+      title: Actividad registrada
+      summary: Notificación de registro de una actividad de auditoría.
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    ExportCompleted:
+      name: ExportCompleted
+      title: Exportación completada
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    ExportFailed:
+      name: ExportFailed
+      title: Exportación fallida
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    MediaUploaded:
+      name: MediaUploaded
+      title: Archivo multimedia cargado
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    MediaDeleted:
+      name: MediaDeleted
+      title: Archivo multimedia eliminado
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+  schemas:
+    EventEnvelope:
+      type: object
+      required:
+        - event_id
+        - type
+        - version
+        - occurred_at
+        - request_id
+        - payload
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          description: Identificador único del evento para garantizar idempotencia.
+        type:
+          type: string
+          description: Nombre del evento.
+          examples:
+            - bookstack.page.updated
+        version:
+          type: string
+          description: Versión del esquema del evento.
+          examples:
+            - "1.0"
+        occurred_at:
+          type: string
+          format: date-time
+          description: Fecha y hora de generación del evento.
+        request_id:
+          type: string
+          description: Identificador de correlación de la solicitud original.
+        payload:
+          type: object
+          description: Datos específicos del evento.
+          additionalProperties: true
