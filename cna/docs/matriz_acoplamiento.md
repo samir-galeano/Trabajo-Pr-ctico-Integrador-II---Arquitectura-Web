@@ -1,10 +1,10 @@
 
 
-\# F5-E2 - Matriz de acoplamiento módulo × tabla
+# F5-E2 - Matriz de acoplamiento módulo × tabla
 
 
 
-\## 1. Objetivo
+## 1. Objetivo
 
 
 
@@ -16,7 +16,7 @@ El objetivo es reconocer las tablas compartidas que generan acoplamiento entre m
 
 
 
-\## 2. Módulos analizados
+## 2. Módulos analizados
 
 
 
@@ -24,21 +24,21 @@ Se consideran los siguientes seis módulos funcionales:
 
 
 
-1\. Content
+1. Content
 
-2\. Search
+2. Search
 
-3\. Activity
+3. Activity
 
-4\. Export
+4. Export
 
-5\. Images/Attachments
+5. Images/Attachments
 
-6\. Users/Permissions
+6. Users/Permissions
 
 
 
-\## 3. Criterio de clasificación
+## 3. Criterio de clasificación
 
 
 
@@ -54,99 +54,57 @@ Se distinguen las tablas funcionales de las tablas de infraestructura, configura
 
 
 
-\## 4. Matriz de acoplamiento
+## 4. Matriz de acoplamiento
 
 
 
 | Tabla | Content | Search | Activity | Export | Media | Users/Permissions |
-
 |---|:---:|:---:|:---:|:---:|:---:|:---:|
-
 | activities | | | X | | | |
-
-| api\_tokens | | | | | | X |
-
+| api_tokens | | | | | | X |
 | attachments | X | | | X | X | |
-
-| bookshelves\_books | X | | | X | | |
-
+| bookshelves_books | X | | | X | | |
 | cache | | | | | | |
-
 | comments | X | | | | | |
-
 | deletions | X | | | | | |
-
-| email\_confirmations | | | | | | X |
-
+| email_confirmations | | | | | | X |
 | entities | X | X | X | X | X | X |
-
-| entity\_container\_data | X | X | | X | | |
-
-| entity\_page\_data | X | X | | X | | |
-
-| entity\_permissions | X | | | | | X |
-
-| failed\_jobs | | | | | | |
-
+| entity_container_data | X | X | | X | | |
+| entity_page_data | X | X | | X | | |
+| entity_permissions | X | | | | | X |
+| failed_jobs | | | | | | |
 | favourites | X | | | | | X |
-
 | images | X | | | X | X | |
-
 | imports | X | | | | | |
-
 | jobs | | | | | | |
-
-| joint\_permissions | X | | | | X | X |
-
-| mention\_history | X | | | | | X |
-
-| mfa\_values | | | | | | X |
-
+| joint_permissions | X | | | | X | X |
+| mention_history | X | | | | | X |
+| mfa_values | | | | | | X |
 | migrations | | | | | | |
-
-| page\_revisions | X | | | X | | |
-
-| password\_resets | | | | | | X |
-
-| permission\_role | | | | | | X |
-
+| page_revisions | X | | | X | | |
+| password_resets | | | | | | X |
+| permission_role | | | | | | X |
 | references | X | | | | | |
-
 | roles | | | | | | X |
-
-| role\_permissions | | | | | | X |
-
-| role\_user | | | | | | X |
-
-| search\_terms | | X | | | | |
-
+| role_permissions | | | | | | X |
+| role_user | | | | | | X |
+| search_terms | | X | | | | |
 | sessions | | | | | | X |
-
 | settings | | | | | | |
-
-| slug\_history | X | | | | | |
-
-| social\_accounts | | | | | | X |
-
-| sort\_rules | X | | | | | |
-
+| slug_history | X | | | | | |
+| social_accounts | | | | | | X |
+| sort_rules | X | | | | | |
 | tags | X | X | | X | | |
-
 | users | X | | X | | X | X |
-
-| user\_invites | | | | | | X |
-
+| user_invites | | | | | | X |
 | views | X | | | | | X |
-
 | watches | X | | | | | X |
-
 | webhooks | | | | | | |
-
-| webhook\_tracked\_events | | | | | | |
-
+| webhook_tracked_events | | | | | | |
 
 
-\*\*Aclaración:\*\* las marcas representan dependencias funcionales identificadas a partir del esquema y las relaciones del código fuente. No significan necesariamente que cada módulo ejecute operaciones de escritura sobre todas las tablas marcadas.
+
+**Aclaración:** las marcas representan dependencias funcionales identificadas a partir del esquema y las relaciones del código fuente. No significan necesariamente que cada módulo ejecute operaciones de escritura sobre todas las tablas marcadas.
 
 
 
@@ -154,11 +112,11 @@ Las tablas sin marcas corresponden a infraestructura, configuración o funcional
 
 
 
-\## 5. Tablas compartidas y acoplamiento
+## 5. Tablas compartidas y acoplamiento
 
 
 
-\### 5.1 entities
+### 5.1 entities
 
 
 
@@ -174,7 +132,7 @@ Su dependencia transversal dificulta la extracción independiente de los módulo
 
 
 
-\### 5.2 users
+### 5.2 users
 
 
 
@@ -182,15 +140,15 @@ Almacena la información de los usuarios y participa en diferentes funcionalidad
 
 
 
-\- Identificación del usuario que realiza una actividad.
+- Identificación del usuario que realiza una actividad.
 
-\- Propiedad y administración del contenido.
+- Propiedad y administración del contenido.
 
-\- Asociación con roles y permisos.
+- Asociación con roles y permisos.
 
-\- Creación y administración de recursos.
+- Creación y administración de recursos.
 
-\- Seguimiento de recursos y preferencias.
+- Seguimiento de recursos y preferencias.
 
 
 
@@ -198,7 +156,7 @@ La tabla representa una dependencia compartida entre distintos contextos.
 
 
 
-\### 5.3 tags
+### 5.3 tags
 
 
 
@@ -210,7 +168,7 @@ Es utilizada por las funcionalidades de contenido, búsqueda y exportación.
 
 
 
-\### 5.4 images y attachments
+### 5.4 images y attachments
 
 
 
@@ -226,7 +184,7 @@ La extracción del módulo Media debe contemplar las referencias a los archivos 
 
 
 
-\### 5.5 entity\_permissions y joint\_permissions
+### 5.5 entity_permissions y joint_permissions
 
 
 
@@ -238,7 +196,7 @@ Su utilización debe considerarse al separar las funcionalidades de contenido y 
 
 
 
-\## 6. Relaciones polimórficas
+## 6. Relaciones polimórficas
 
 
 
@@ -251,24 +209,15 @@ Algunos ejemplos identificados en el esquema:
 
 
 | Tabla | Columnas | Función |
-
 |---|---|---|
-
-| activities | loggable\_id, loggable\_type | Relaciona actividades con distintos recursos. |
-
-| comments | commentable\_id, commentable\_type | Relaciona comentarios con distintos recursos. |
-
-| tags | entity\_id, entity\_type | Asocia etiquetas con entidades. |
-
-| views | viewable\_id, viewable\_type | Registra visualizaciones de recursos. |
-
-| favourites | favouritable\_id, favouritable\_type | Asocia favoritos con recursos. |
-
-| watches | watchable\_id, watchable\_type | Asocia seguimientos con recursos. |
-
-| references | from\_id, from\_type, to\_id, to\_type | Representa referencias entre recursos. |
-
-| joint\_permissions | entity\_id, entity\_type | Asocia permisos compartidos con entidades. |
+| activities | loggable_id, loggable_type | Relaciona actividades con distintos recursos. |
+| comments | commentable_id, commentable_type | Relaciona comentarios con distintos recursos. |
+| tags | entity_id, entity_type | Asocia etiquetas con entidades. |
+| views | viewable_id, viewable_type | Registra visualizaciones de recursos. |
+| favourites | favouritable_id, favouritable_type | Asocia favoritos con recursos. |
+| watches | watchable_id, watchable_type | Asocia seguimientos con recursos. |
+| references | from_id, from_type, to_id, to_type | Representa referencias entre recursos. |
+| joint_permissions | entity_id, entity_type | Asocia permisos compartidos con entidades. |
 
 
 
@@ -276,27 +225,27 @@ Estas relaciones incrementan el acoplamiento porque diferentes funcionalidades p
 
 
 
-\## 7. Consideraciones para la extracción
+## 7. Consideraciones para la extracción
 
 
 
-\- No se deben extraer tablas compartidas sin analizar previamente sus dependencias.
+- No se deben extraer tablas compartidas sin analizar previamente sus dependencias.
 
-\- Los microservicios no deben consultar directamente la base de datos MariaDB de BookStack.
+- Los microservicios no deben consultar directamente la base de datos MariaDB de BookStack.
 
-\- La integración con BookStack debe realizarse mediante REST API y Webhooks.
+- La integración con BookStack debe realizarse mediante REST API y Webhooks.
 
-\- Cada microservicio deberá administrar sus propios datos.
+- Cada microservicio deberá administrar sus propios datos.
 
-\- Las relaciones entre contextos deberán resolverse mediante contratos e integración por eventos cuando corresponda.
+- Las relaciones entre contextos deberán resolverse mediante contratos e integración por eventos cuando corresponda.
 
-\- Se deberá contemplar la consistencia eventual, la idempotencia y la recuperación ante fallos.
+- Se deberá contemplar la consistencia eventual, la idempotencia y la recuperación ante fallos.
 
-\- Las tablas de infraestructura y configuración deben analizarse por separado antes de asignarlas a un microservicio.
+- Las tablas de infraestructura y configuración deben analizarse por separado antes de asignarlas a un microservicio.
 
 
 
-\## 8. Limitaciones del análisis
+## 8. Limitaciones del análisis
 
 
 
@@ -312,13 +261,13 @@ Las dependencias indirectas deberán validarse durante la implementación y las 
 
 
 
-\## 9. Evidencias
+## 9. Evidencias
 
 
 
-\- F5-E1: Inventario y mapeo de tablas de la base de datos BookStack por módulo.
+- F5-E1: Inventario y mapeo de tablas de la base de datos BookStack por módulo.
 
-\- F5-E2: Matriz de acoplamiento módulo × tabla.
+- F5-E2: Matriz de acoplamiento módulo × tabla.
 
 
 
