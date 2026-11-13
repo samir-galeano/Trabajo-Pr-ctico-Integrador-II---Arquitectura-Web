@@ -1,370 +1,290 @@
 
+# F5-E3 - Mapa de contextos DDD de BookStack
 
-\# F5-E3 - Mapa de contextos DDD de BookStack
-
-
-
-\## 1. Objetivo
-
-
+## 1. Objetivo
 
 Identificar los contextos delimitados (Bounded Contexts) de BookStack y sus relaciones, como base para una futura separación progresiva hacia una arquitectura de microservicios.
 
-
-
 La estrategia propuesta es Strangler Fig: BookStack continuará funcionando como sistema principal mientras se extraen funcionalidades progresivamente.
 
+Los contextos delimitados representan límites funcionales y no necesariamente servicios independientes en la implementación actual.
 
+## 2. Contextos delimitados
 
-\## 2. Contextos delimitados
-
-
-
-\### 2.1 Content Context
+### 2.1 Content Context
 
 Responsabilidad:
 
-\- Administrar estanterías, libros, capítulos y páginas.
-
-\- Gestionar revisiones y estructura del contenido.
-
-\- Mantener las relaciones entre las entidades.
-
-
+- Administrar estanterías, libros, capítulos y páginas.
+- Gestionar revisiones y estructura del contenido.
+- Mantener las relaciones entre las entidades.
+- Administrar etiquetas, comentarios y referencias asociadas al contenido.
 
 Tablas principales:
 
-\- entities
+- `entities`
+- `entity_container_data`
+- `entity_page_data`
+- `page_revisions`
+- `bookshelves_books`
+- `tags`
+- `comments`
+- `references`
+- `slug_history`
+- `sort_rules`
+- `deletions`
 
-\- entity\_container\_data
+Este contexto representa el núcleo funcional de BookStack.
 
-\- entity\_page\_data
-
-\- page\_revisions
-
-\- bookshelves\_books
-
-
-
-\### 2.2 Search Context
+### 2.2 Search Context
 
 Responsabilidad:
 
-\- Indexar contenido.
-
-\- Procesar términos de búsqueda.
-
-\- Permitir búsquedas por texto y etiquetas.
-
-
+- Indexar contenido.
+- Procesar términos de búsqueda.
+- Permitir búsquedas por texto y etiquetas.
+- Mantener un índice de búsqueda independiente.
 
 Tablas principales:
 
-\- search\_terms
-
-\- tags
-
-\- entities
-
-
+- `search_terms`
+- `entities`
+- `entity_container_data`
+- `entity_page_data`
+- `tags`
 
 Microservicio propuesto: Search.
 
+El servicio Search obtendrá la información necesaria mediante las interfaces de integración con BookStack y mantendrá su propio almacenamiento para los índices.
 
-
-\### 2.3 Activity Context
+### 2.3 Activity Context
 
 Responsabilidad:
 
-\- Registrar actividad de usuarios.
+- Registrar actividades realizadas por los usuarios.
+- Mantener información de auditoría.
+- Asociar los eventos registrados con los usuarios y recursos involucrados.
 
-\- Registrar visualizaciones y comentarios.
+Tabla principal:
 
-\- Gestionar favoritos y seguimiento de entidades.
+- `activities`
 
+Tablas relacionadas:
 
+- `users`
+- `entities`
 
-Tablas principales:
+La tabla `activities` utiliza los campos `loggable_id` y `loggable_type` para representar relaciones polimórficas con diferentes recursos.
 
-\- activities
-
-\- views
-
-\- comments
-
-\- favourites
-
-\- watches
-
-\- deletions
-
-
+Otras funcionalidades relacionadas con seguimiento y participación, como visualizaciones, comentarios, favoritos y notificaciones, deben analizarse como responsabilidades diferenciadas antes de incorporarlas al servicio de auditoría.
 
 Microservicio propuesto: Audit.
 
-
-
-\### 2.4 Export Context
+### 2.4 Export Context
 
 Responsabilidad:
 
-\- Exportar libros, capítulos y páginas.
+- Exportar libros, capítulos y páginas.
+- Incluir etiquetas, imágenes y archivos adjuntos.
+- Generar paquetes de exportación.
+- Gestionar el estado de las solicitudes de exportación.
 
-\- Incluir etiquetas, imágenes y archivos adjuntos.
+Tablas consultadas por los procesos de exportación:
 
-\- Generar paquetes de exportación.
-
-
-
-Tablas principales:
-
-\- imports
-
-\- entities
-
-\- tags
-
-\- images
-
-\- attachments
-
-
+- `entities`
+- `entity_container_data`
+- `entity_page_data`
+- `page_revisions`
+- `tags`
+- `images`
+- `attachments`
 
 Microservicio propuesto: Export.
 
+El servicio deberá obtener los datos de BookStack mediante REST API y administrar independientemente los trabajos y resultados de exportación.
 
-
-\### 2.5 Media Context
+### 2.5 Media Context
 
 Responsabilidad:
 
-\- Administrar imágenes.
-
-\- Administrar archivos adjuntos.
-
-\- Gestionar referencias a archivos y su almacenamiento.
-
-
+- Administrar imágenes.
+- Administrar archivos adjuntos.
+- Gestionar referencias a archivos y su almacenamiento.
+- Proporcionar acceso controlado a los recursos multimedia.
 
 Tablas principales:
 
-\- images
+- `images`
+- `attachments`
 
-\- attachments
+Tablas relacionadas:
 
-
+- `entities`
+- `joint_permissions`
 
 Microservicio propuesto: Media.
 
+El servicio administrará sus propios datos y almacenamiento, evitando depender directamente de las tablas de MariaDB de BookStack.
 
-
-\### 2.6 Users and Permissions Context
+### 2.6 Users and Permissions Context
 
 Responsabilidad:
 
-\- Administrar usuarios y roles.
-
-\- Gestionar permisos globales y por entidad.
-
-\- Controlar el acceso a funcionalidades y contenidos.
-
-
+- Administrar usuarios y roles.
+- Gestionar permisos globales y por entidad.
+- Controlar el acceso a funcionalidades y contenidos.
+- Administrar mecanismos de autenticación y autorización.
 
 Tablas principales:
 
-\- users
+- `users`
+- `roles`
+- `role_user`
+- `role_permissions`
+- `permission_role`
+- `entity_permissions`
+- `joint_permissions`
 
-\- roles
+Tablas relacionadas:
 
-\- role\_user
+- `api_tokens`
+- `sessions`
+- `mfa_values`
+- `social_accounts`
+- `user_invites`
+- `email_confirmations`
+- `password_resets`
 
-\- role\_permissions
+Este contexto permanece inicialmente dentro del monolito BookStack. Los servicios externos deberán respetar los mecanismos de autenticación y autorización definidos para la integración.
 
-\- permission\_role
+## 3. Relaciones entre contextos
 
-\- entity\_permissions
+Las principales relaciones identificadas son:
 
-\- joint\_permissions
+- Content proporciona información a Search para construir y actualizar el índice de búsqueda.
+- Search depende de los datos de contenido y etiquetas administrados por BookStack.
+- Activity registra acciones relacionadas con usuarios y entidades de Content.
+- Export consume información de Content y referencias a Media para generar paquetes de exportación.
+- Media administra los archivos relacionados con el contenido.
+- Users and Permissions proporciona información de identidad y autorización a los demás contextos.
 
+Estas relaciones representan dependencias funcionales que deberán resolverse mediante contratos de integración y no mediante acceso directo a tablas compartidas.
 
-
-\## 3. Relaciones entre contextos
-
-
-
-\- Content utiliza información de Users and Permissions para determinar propiedad y acceso al contenido.
-
-\- Search consume información de Content y etiquetas para construir el índice de búsqueda.
-
-\- Activity registra acciones relacionadas con usuarios y entidades de Content.
-
-\- Export consume contenido y referencias a Media para generar paquetes de exportación.
-
-\- Media se relaciona con Content mediante referencias a páginas y entidades.
-
-\- Users and Permissions proporciona información de identidad y autorización a los demás contextos.
-
-
-
-\## 4. Estrategia de integración
-
-
+## 4. Estrategia de integración
 
 La integración entre BookStack y los nuevos microservicios se realizará exclusivamente mediante REST API y Webhooks.
 
-
-
 No se modificará el código fuente de BookStack.
 
+La arquitectura propuesta contempla:
 
+- API Gateway como punto de entrada para las solicitudes dirigidas a los microservicios.
+- Un componente de integración para recibir y adaptar los Webhooks de BookStack.
+- NATS JetStream como broker de mensajería para la comunicación asíncrona.
+- API REST de BookStack para consultar información del monolito.
+- Bases de datos independientes para cada microservicio.
+- Una capa anticorrupción (Anti-Corruption Layer) para adaptar los modelos y contratos de BookStack a los modelos internos de los nuevos servicios.
 
-Se utilizará un API Gateway como punto de entrada para las funcionalidades extraídas y un broker de mensajería para la comunicación asíncrona.
+Los microservicios no accederán directamente a la base de datos MariaDB de BookStack.
 
-
-
-Los microservicios tendrán bases de datos propias y no accederán directamente a la base MariaDB de BookStack.
-
-
-
-\## 5. Mapa de contextos
-
-
+## 5. Mapa de contextos
 
 ```mermaid
-
 flowchart TB
 
-&#x20;   U\[Usuarios]
+    U[Usuarios]
 
+    subgraph BS["BookStack - Sistema monolítico"]
+        C[Content Context]
+        S[Search Context]
+        A[Activity Context]
+        E[Export Context]
+        M[Media Context]
+        P[Users and Permissions Context]
 
+        P --> C
+        P --> A
+        C --> S
+        C --> A
+        C --> E
+        M --> C
+        M --> E
+    end
 
-&#x20;   subgraph BS\["BookStack - Sistema monolítico"]
+    subgraph INT["Capa de integración"]
+        GW[API Gateway]
+        WH[Webhook Receiver]
+        ACL[Anti-Corruption Layer]
+        B[NATS JetStream]
+    end
 
-&#x20;       C\[Content Context]
+    subgraph MS["Microservicios propuestos"]
+        SS[Search Service]
+        AS[Audit Service]
+        ES[Export Service]
+        MSVC[Media Service]
+    end
 
-&#x20;       S\[Search Context]
+    U --> GW
 
-&#x20;       A\[Activity Context]
+    GW --> SS
+    GW --> AS
+    GW --> ES
+    GW --> MSVC
 
-&#x20;       E\[Export Context]
+    BS -->|Webhooks| WH
+    WH --> ACL
+    ACL --> B
 
-&#x20;       M\[Media Context]
+    B --> SS
+    B --> AS
+    B --> ES
+    B --> MSVC
 
-&#x20;       P\[Users and Permissions Context]
-
-
-
-&#x20;       P --> C
-
-&#x20;       C --> S
-
-&#x20;       C --> A
-
-&#x20;       C --> E
-
-&#x20;       M --> C
-
-&#x20;       M --> E
-
-&#x20;       P --> A
-
-&#x20;   end
-
-
-
-&#x20;   subgraph MS\["Microservicios propuestos"]
-
-&#x20;       GW\[API Gateway]
-
-&#x20;       SS\[Search Service]
-
-&#x20;       AS\[Audit Service]
-
-&#x20;       ES\[Export Service]
-
-&#x20;       MSVC\[Media Service]
-
-&#x20;       B\[Broker NATS JetStream]
-
-&#x20;   end
-
-
-
-&#x20;   U --> GW
-
-&#x20;   GW --> SS
-
-&#x20;   GW --> AS
-
-&#x20;   GW --> ES
-
-&#x20;   GW --> MSVC
-
-
-
-&#x20;   C -->|REST API / Webhooks| GW
-
-&#x20;   GW --> B
-
-&#x20;   B --> SS
-
-&#x20;   B --> AS
-
-&#x20;   B --> ES
-
-&#x20;   B --> MSVC
-
+    SS -->|REST API| BS
+    ES -->|REST API| BS
+    MSVC -->|REST API cuando corresponda| BS
 ```
 
+El diagrama representa la arquitectura objetivo y las relaciones propuestas. No significa que los microservicios ya estén implementados.
 
+## 6. Relaciones DDD y decisiones de integración
 
-\## 6. Relaciones DDD y decisiones de integración
-
-
-
-| Contexto origen | Contexto destino | Relación |
-
+| Contexto origen | Contexto destino | Relación propuesta |
 |---|---|---|
-
 | Content | Search | Customer/Supplier |
-
 | Content | Activity | Customer/Supplier |
-
 | Content | Export | Customer/Supplier |
-
 | Content | Media | Customer/Supplier |
-
 | Users and Permissions | Content | Customer/Supplier |
-
 | Users and Permissions | Activity | Customer/Supplier |
 
+Se propone utilizar una capa anticorrupción (Anti-Corruption Layer) para adaptar los modelos, identificadores y contratos de BookStack a los modelos internos de los nuevos microservicios.
 
+La comunicación asíncrona se realizará mediante eventos publicados en NATS JetStream.
 
-Se propone utilizar una capa anticorrupción (Anti-Corruption Layer) en las integraciones donde sea necesario adaptar el modelo de datos y los contratos de BookStack al modelo de los nuevos servicios.
+Los servicios consumidores deberán implementar mecanismos de idempotencia, reintentos y recuperación ante fallos.
 
+## 7. Consideraciones arquitectónicas
 
+- Los contextos representan límites funcionales propuestos; no implican que actualmente existan como servicios independientes.
+- La extracción será incremental mediante la estrategia Strangler Fig.
+- Las tablas compartidas identificadas en F5-E2 no serán compartidas directamente entre microservicios.
+- La integración con BookStack se realizará mediante REST API y Webhooks.
+- Cada microservicio administrará sus propios datos.
+- La sincronización de información se realizará mediante contratos y eventos.
+- Se deberá contemplar consistencia eventual, idempotencia y mecanismos de recuperación.
+- Users and Permissions permanecerá inicialmente dentro de BookStack.
+- La capa anticorrupción permitirá desacoplar los modelos internos del monolito de los nuevos servicios.
 
-\## 7. Consideraciones
+## 8. Conclusión
 
+El análisis DDD permite identificar seis contextos funcionales dentro de BookStack y reconocer sus principales dependencias.
 
+La arquitectura propuesta contempla la extracción progresiva de Search, Audit, Export y Media, manteniendo inicialmente las funcionalidades de contenido y usuarios dentro del monolito.
 
-\- Los contextos representan límites funcionales propuestos; no implican que actualmente existan como servicios independientes.
+La utilización de API REST, Webhooks, NATS JetStream y bases de datos independientes permitirá reducir el acoplamiento y avanzar hacia una arquitectura distribuida sin modificar el código fuente de BookStack.
 
-\- La extracción será incremental.
-
-\- Las tablas compartidas identificadas en F5-E2 no serán compartidas directamente entre microservicios.
-
-\- La sincronización de datos se realizará mediante contratos y eventos.
-
-\- Se deberá contemplar consistencia eventual, idempotencia y mecanismos de recuperación.
-
-
-
-\## 8. Evidencia
-
-
+## 9. Evidencia
 
 F5-E3: Mapa de contextos DDD de BookStack.
-
-
-
