@@ -38,7 +38,7 @@ services:
       <<: *otel
       OTEL_SERVICE_NAME: media-svc
     ports:
-      - "192.168.0.6:8004:8004"
+      - "${VM2_IP:-192.168.0.6}:8004:8004"
     networks:
       - cna-net
     depends_on:
@@ -128,7 +128,7 @@ services:
     volumes:
       - ./cna/deploy/secrets:/run/secrets/bookstack:ro
     ports:
-      - "192.168.0.6:8000:8000"
+      - "${VM2_IP:-192.168.0.6}:8000:8000"
     extra_hosts:
       - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
     networks:
@@ -176,7 +176,7 @@ services:
       <<: *otel
       OTEL_SERVICE_NAME: audit-svc
     ports:
-      - "192.168.0.6:8002:8002"
+      - "${VM2_IP:-192.168.0.6}:8002:8002"
     networks:
       - cna-net
     depends_on:
@@ -208,7 +208,7 @@ services:
       <<: *otel
       OTEL_SERVICE_NAME: event-bridge
     ports:
-      - "192.168.0.6:8001:8001"
+      - "${VM2_IP:-192.168.0.6}:8001:8001"
     networks:
       - cna-net
     depends_on:
@@ -233,6 +233,11 @@ services:
         format: raw
     volumes:
       - minio-data:/data
+    # Solo la API S3, para que el gateway (VM-1) sirva las descargas de
+    # exportaciones; el firewall DOCKER-USER la limita a VM-1. La consola
+    # (9001) no se publica.
+    ports:
+      - "${VM2_IP:-192.168.0.6}:9000:9000"
     networks:
       - cna-net
     restart: unless-stopped
@@ -277,7 +282,7 @@ services:
     volumes:
       - ./cna/deploy/secrets:/run/secrets/bookstack:ro
     ports:
-      - "192.168.0.6:8003:8003"
+      - "${VM2_IP:-192.168.0.6}:8003:8003"
     extra_hosts:
       - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
     networks:

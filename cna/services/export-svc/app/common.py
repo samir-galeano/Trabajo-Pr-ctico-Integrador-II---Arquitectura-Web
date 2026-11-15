@@ -34,7 +34,7 @@ BUCKET = os.getenv("MINIO_BUCKET", "bookstack-exports")
 ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 PUBLIC_ENDPOINT = os.getenv(
     "MINIO_PUBLIC_ENDPOINT",
-    "http://192.168.0.6:9000"
+    "https://api.bookstack.local"
 )
 ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
 SECRET_KEY = os.getenv("MINIO_SECRET_KEY")

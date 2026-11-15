@@ -13,7 +13,7 @@ Se levanta junto con el resto con `docker compose up -d` (el `compose.yaml` raí
 
 La contraseña de Grafana (`admin`) está en `cna/observability/grafana.env`, que genera `./cna/deploy/setup-env.sh`.
 
-UFW en VM-2: 3000, 9090 y 16686 solo desde la red del laboratorio o el anfitrión, y 3100 solo desde 192.168.100.23 (VM-1).
+Los puertos se publican solo en la IP de VM-2 (`VM2_IP`). Quién puede entrar lo decide el firewall `DOCKER-USER` de `cna/deploy/host-configs/vm2/configurar-docker-user.sh` (UFW no filtra los puertos que publica Docker): 3000, 9090 y 16686 solo desde la red del laboratorio, y 3100 solo desde VM-1.
 
 ## Métricas
 
