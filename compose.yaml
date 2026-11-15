@@ -23,7 +23,7 @@ services:
     env_file:
       - ./cna/services/media-svc/.env
     ports:
-      - "8004:8004"
+      - "192.168.0.6:8004:8004"
     networks:
       - cna-net
     depends_on:
@@ -106,7 +106,7 @@ services:
     env_file:
       - ./cna/services/search-svc/.env
     ports:
-      - "8000:8000"
+      - "192.168.0.6:8000:8000"
     extra_hosts:
       - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
     networks:
@@ -133,7 +133,7 @@ services:
     env_file:
       - ./cna/services/audit-svc/.env
     ports:
-      - "8002:8002"
+      - "192.168.0.6:8002:8002"
     volumes:
       - audit-data:/data
     networks:
@@ -159,7 +159,7 @@ services:
     env_file:
       - ./cna/services/event-bridge/.env
     ports:
-      - "8001:8001"
+      - "192.168.0.6:8001:8001"
     networks:
       - cna-net
     depends_on:
@@ -184,9 +184,6 @@ services:
         format: raw
     volumes:
       - minio-data:/data
-    ports:
-      - "9000:9000"
-      - "9001:9001"
     networks:
       - cna-net
     restart: unless-stopped
@@ -207,7 +204,7 @@ services:
     env_file:
       - ./cna/services/export-svc/.env
     ports:
-      - "8003:8003"
+      - "192.168.0.6:8003:8003"
     extra_hosts:
       - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
     networks:
