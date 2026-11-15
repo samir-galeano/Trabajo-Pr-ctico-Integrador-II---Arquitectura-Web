@@ -14,6 +14,8 @@ from fastapi.responses import Response
 from PIL import Image, UnidentifiedImageError
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
+from app import auth
+
 SERVICE = "media-svc"
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "bookstack-media")
@@ -71,6 +73,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Media Service", version="1.0.0", lifespan=lifespan)
+
+
+# Bearer (BearerAuth de los contratos). Se registra antes que el middleware
+# de métricas para quedar por dentro: los 401 también se miden y se loguean.
+app.middleware("http")(auth.middleware)
 
 
 @app.middleware("http")

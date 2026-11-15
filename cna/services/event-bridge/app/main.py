@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 import nats
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response
+from opentelemetry import propagate, trace
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 SERVICE = "event-bridge"
@@ -30,8 +32,10 @@ LATENCY = Histogram(
     ["service", "method", "path"]
 )
 
-logging.basicConfig(level=logging.INFO)
+# Solo el mensaje: cada línea ya es un JSON completo.
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(SERVICE)
+tracer = trace.get_tracer(SERVICE)
 
 nc = None
 js = None
@@ -75,6 +79,25 @@ def build_event(data, request_id):
     }
 
 
+async def publish_event(event):
+    """Publica en JetStream con el contexto de traza en las cabeceras NATS,
+    para que la traza siga en search-svc y audit-svc."""
+    with tracer.start_as_current_span(
+        f"publish {SUBJECT}",
+        kind=trace.SpanKind.PRODUCER,
+        attributes={
+            "messaging.system": "nats",
+            "messaging.destination.name": SUBJECT,
+            "messaging.message.id": event["event_id"],
+            "bookstack.event_type": event["type"],
+            "request_id": event["request_id"],
+        },
+    ):
+        headers = {"X-Request-ID": event["request_id"]}
+        propagate.inject(headers)
+        await js.publish(SUBJECT, json.dumps(event).encode("utf-8"), headers=headers)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global nc, js
@@ -101,6 +124,30 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Event Bridge", lifespan=lifespan)
 
+WEBHOOK_PREFIX = "/webhooks/bookstack/"
+REDACTED_PATH = WEBHOOK_PREFIX + "[REDACTED]"
+
+
+def redact_webhook_token(span, scope):
+    """La URL del webhook lleva el token: no debe llegar a Jaeger."""
+    if span is None or not span.is_recording():
+        return
+    if not scope.get("path", "").startswith(WEBHOOK_PREFIX):
+        return
+    for key in ("http.target", "url.path"):
+        span.set_attribute(key, REDACTED_PATH)
+    for key in ("http.url", "url.full"):
+        span.set_attribute(key, REDACTED_PATH)
+
+
+# Instrumentación explícita (la automática de FastAPI está desactivada en el
+# Dockerfile con OTEL_PYTHON_DISABLED_INSTRUMENTATIONS) para poder redactar.
+FastAPIInstrumentor.instrument_app(
+    app,
+    server_request_hook=redact_webhook_token,
+    excluded_urls="healthz,readyz,metrics",
+)
+
 
 @app.middleware("http")
 async def metrics_and_request_id(request: Request, call_next):
@@ -113,18 +160,23 @@ async def metrics_and_request_id(request: Request, call_next):
     duration = time.perf_counter() - start
     response.headers["X-Request-ID"] = request_id
 
+    # Plantilla de la ruta (/webhooks/bookstack/{token}): el token del
+    # webhook no debe quedar en logs ni en etiquetas de Prometheus.
+    route = request.scope.get("route")
+    path = getattr(route, "path", request.url.path)
+
     REQUESTS.labels(
-        SERVICE, request.method, request.url.path, str(response.status_code)
+        SERVICE, request.method, path, str(response.status_code)
     ).inc()
 
-    LATENCY.labels(SERVICE, request.method, request.url.path).observe(duration)
+    LATENCY.labels(SERVICE, request.method, path).observe(duration)
 
     logger.info(json.dumps({
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "level": "INFO",
         "service": SERVICE,
         "request_id": request_id,
-        "message": f"{request.method} {request.url.path} "
+        "message": f"{request.method} {path} "
                    f"{response.status_code} {duration:.4f}s"
     }))
 
@@ -172,10 +224,7 @@ async def receive_webhook(
         raise HTTPException(status_code=400, detail=str(exc))
 
     try:
-        await js.publish(
-            SUBJECT,
-            json.dumps(event).encode("utf-8")
-        )
+        await publish_event(event)
     except Exception:
         logger.exception("No se pudo publicar el evento en NATS")
         raise HTTPException(status_code=503, detail="Broker no disponible")

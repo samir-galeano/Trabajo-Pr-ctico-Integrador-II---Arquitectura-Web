@@ -120,7 +120,7 @@ components:
     BearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      description: 'Token opaco (API key) configurado en API_AUTH_TOKEN, enviado como "Authorization: Bearer <token>". /healthz, /readyz y /metrics no lo requieren; sin token o con uno inválido se responde 401.'
 
   schemas:
     MediaFile:
