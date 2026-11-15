@@ -21,19 +21,16 @@ services:
       context: ./cna/services/media-svc
     container_name: media-svc
     env_file:
-      - ./cna/services/export-svc/.env
-    environment:
-      MINIO_BUCKET: bookstack-media
-      NATS_URL: nats://nats:4222
+      - ./cna/services/media-svc/.env
     ports:
       - "8004:8004"
     networks:
       - cna-net
     depends_on:
-      nats:
-        condition: service_healthy
-      minio:
-        condition: service_started
+      nats-init:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     cpus: 0.25
     mem_limit: 256m
@@ -59,6 +56,48 @@ services:
       timeout: 5s
       retries: 5
 
+  # Contenedor de una sola vez: crea los streams de JetStream (idempotente).
+  # Reutiliza la imagen de event-bridge, que ya trae nats-py.
+  nats-init:
+    image: event-bridge:1.0.0
+    build:
+      context: ./cna/services/event-bridge
+    command: ["python", "/init/nats_init.py"]
+    environment:
+      NATS_URL: nats://nats:4222
+    volumes:
+      - ./cna/deploy/init:/init:ro
+    networks:
+      - cna-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 128m
+
+  # Contenedor de una sola vez: crea los buckets de MinIO (idempotente).
+  # Reutiliza la imagen de export-svc, que ya trae boto3.
+  minio-init:
+    image: export-svc:1.1.0
+    build:
+      context: ./cna/services/export-svc
+    command: ["python", "/init/minio_init.py"]
+    env_file:
+      - path: ./cna/deploy/minio/.env
+        format: raw
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKETS: bookstack-exports,bookstack-media
+    volumes:
+      - ./cna/deploy/init:/init:ro
+    networks:
+      - cna-net
+    depends_on:
+      minio:
+        condition: service_started
+    restart: "no"
+    mem_limit: 128m
+
   search-svc:
     image: search-svc:1.1.6-545969a
     build:
@@ -69,14 +108,14 @@ services:
     ports:
       - "8000:8000"
     extra_hosts:
-      - "bookstack.local:192.168.0.17"
+      - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
     networks:
       - cna-net
     depends_on:
       search-index-db:
         condition: service_healthy
-      nats:
-        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     cpus: 0.50
     mem_limit: 512m
@@ -100,8 +139,8 @@ services:
     networks:
       - cna-net
     depends_on:
-      nats:
-        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     cpus: 0.25
     mem_limit: 256m
@@ -124,8 +163,8 @@ services:
     networks:
       - cna-net
     depends_on:
-      nats:
-        condition: service_healthy
+      nats-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     cpus: 0.25
     mem_limit: 256m
@@ -164,12 +203,12 @@ services:
     ports:
       - "8003:8003"
     extra_hosts:
-      - "bookstack.local:192.168.0.17"
+      - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
     networks:
       - cna-net
     depends_on:
-      minio:
-        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
     restart: unless-stopped
     cpus: 0.25
     mem_limit: 256m
@@ -180,21 +219,18 @@ services:
       start_period: 10s
       retries: 3
 
+# Compose crea volúmenes y red si no existen (CA-7: levanta desde repo limpio).
+# Se mantienen los nombres fijos para reutilizar los datos de despliegues previos.
 volumes:
   search-index-data:
-    external: true
     name: search-index-data
   nats-data:
-    external: true
     name: nats-data
   audit-data:
-    external: true
     name: audit-data
   minio-data:
-    external: true
     name: minio-data
 
 networks:
   cna-net:
-    external: true
     name: cna-net
