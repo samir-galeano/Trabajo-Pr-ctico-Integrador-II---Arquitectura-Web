@@ -3,29 +3,35 @@ import json
 import logging
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import nats
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import Response
+from opentelemetry import propagate, trace
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+
+from app import auth
+from app import database
 
 SERVICE = "audit-svc"
 NATS_URL = os.getenv("NATS_URL", "nats://nats:4222")
 EVENT_SUBJECT = os.getenv("EVENT_SUBJECT", "bookstack.content.events")
-AUDIT_FILE = os.getenv("AUDIT_FILE", "/data/audit.jsonl")
 
 REQUESTS = Counter("audit_http_requests_total", "HTTP requests", ["method", "path", "status"])
-LATENCY = Histogram("audit_http_request_duration_seconds", "HTTP request latency")
+LATENCY = Histogram("audit_http_request_duration_seconds", "HTTP request latency", ["method", "path"])
+EVENTS = Counter("audit_events_total", "Eventos consumidos", ["result"])
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(SERVICE)
+tracer = trace.get_tracer(SERVICE)
 
-records = {}
 nc = None
 js = None
 consumer_task = None
+db_ready = False
 
 
 def log_json(level, message, request_id="-", **extra):
@@ -37,22 +43,24 @@ def log_json(level, message, request_id="-", **extra):
         "message": message,
         **extra,
     }
-    getattr(logger, level.lower(), logger.info)(json.dumps(data))
+    getattr(logger, level.lower(), logger.info)(json.dumps(data, ensure_ascii=False))
 
 
-def persist(record):
-    os.makedirs(os.path.dirname(AUDIT_FILE), exist_ok=True)
-    with open(AUDIT_FILE, "a", encoding="utf-8") as file:
-        file.write(json.dumps(record, ensure_ascii=False) + "\n")
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def process_event(event):
+def build_record(event):
+    """Convierte el sobre de evento en un registro de auditoría."""
     event_id = event.get("event_id")
     if not event_id:
         raise ValueError("El evento no contiene event_id")
-
-    if event_id in records:
-        return False
 
     payload = event.get("payload") or {}
     triggered_by = payload.get("triggered_by", "unknown")
@@ -61,24 +69,46 @@ def process_event(event):
     else:
         actor = str(triggered_by)
 
-    record = {
-        "event_id": event_id,
-        "type": event.get("type", "unknown"),
-        "occurred_at": event.get("occurred_at"),
-        "request_id": event.get("request_id", "-"),
+    event_type = event.get("type", "unknown")
+    # bookstack.page.updated -> page
+    parts = event_type.split(".")
+    entity_type = parts[1] if len(parts) >= 3 else ""
+
+    return {
+        "event_id": str(event_id),
+        "type": event_type,
+        "entity_type": entity_type,
         "entity_id": str(payload.get("page_id") or payload.get("id") or ""),
         "entity_name": payload.get("name", ""),
         "actor": actor,
+        "occurred_at": parse_timestamp(event.get("occurred_at")),
+        "request_id": event.get("request_id", "-"),
         "payload": payload,
     }
 
-    persist(record)
-    records[event_id] = record
-    return True
+
+def process_event(event):
+    """Registra el evento. Devuelve False si ya estaba (idempotencia)."""
+    return database.insert_record(build_record(event))
+
+
+async def ensure_database():
+    global db_ready
+
+    while not db_ready:
+        try:
+            await asyncio.to_thread(database.initialize)
+            db_ready = True
+            log_json("INFO", "Esquema de auditoría listo")
+        except Exception as exc:
+            log_json("ERROR", "PostgreSQL no disponible, reintentando", error=str(exc))
+            await asyncio.sleep(3)
 
 
 async def consume_events():
     global nc, js
+
+    await ensure_database()
 
     while True:
         try:
@@ -112,10 +142,24 @@ async def consume_events():
                     continue
 
                 for message in messages:
+                    headers = dict(message.headers or {})
                     try:
                         event = json.loads(message.data.decode())
-                        inserted = process_event(event)
+                        # Tramo hijo del publish de event-bridge (traceparent en cabeceras NATS)
+                        with tracer.start_as_current_span(
+                            f"process {EVENT_SUBJECT}",
+                            context=propagate.extract(headers),
+                            kind=trace.SpanKind.CONSUMER,
+                            attributes={
+                                "messaging.system": "nats",
+                                "messaging.consumer.group.name": "AUDIT_CONSUMER",
+                                "messaging.message.id": str(event.get("event_id", "")),
+                                "request_id": event.get("request_id", "-"),
+                            },
+                        ):
+                            inserted = await asyncio.to_thread(process_event, event)
                         await message.ack()
+                        EVENTS.labels("inserted" if inserted else "duplicate").inc()
                         log_json(
                             "INFO",
                             "Evento procesado" if inserted else "Evento duplicado ignorado",
@@ -123,6 +167,7 @@ async def consume_events():
                             event_id=event.get("event_id"),
                         )
                     except Exception as exc:
+                        EVENTS.labels("error").inc()
                         log_json("ERROR", "Error procesando evento", error=str(exc))
                         await message.nak()
 
@@ -136,15 +181,6 @@ async def consume_events():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global consumer_task
-
-    if os.path.exists(AUDIT_FILE):
-        with open(AUDIT_FILE, encoding="utf-8") as file:
-            for line in file:
-                try:
-                    record = json.loads(line)
-                    records[record["event_id"]] = record
-                except (ValueError, KeyError):
-                    continue
 
     consumer_task = asyncio.create_task(consume_events())
     yield
@@ -160,13 +196,18 @@ async def lifespan(app: FastAPI):
         await nc.close()
 
 
-app = FastAPI(title="Audit Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Audit Service", version="2.0.0", lifespan=lifespan)
+
+
+# Bearer (BearerAuth de los contratos). Se registra antes que el middleware
+# de métricas para quedar por dentro: los 401 también se miden y se loguean.
+app.middleware("http")(auth.middleware)
 
 
 @app.middleware("http")
 async def observe_requests(request: Request, call_next):
     start = time.perf_counter()
-    request_id = request.headers.get("X-Request-ID", "-")
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
 
     try:
         response = await call_next(request)
@@ -177,7 +218,7 @@ async def observe_requests(request: Request, call_next):
     elapsed = time.perf_counter() - start
     response.headers["X-Request-ID"] = request_id
     REQUESTS.labels(request.method, request.url.path, str(response.status_code)).inc()
-    LATENCY.observe(elapsed)
+    LATENCY.labels(request.method, request.url.path).observe(elapsed)
 
     log_json(
         "INFO",
@@ -200,6 +241,10 @@ async def healthz():
 async def readyz():
     if nc is None or not nc.is_connected or js is None:
         raise HTTPException(status_code=503, detail="NATS no disponible")
+    try:
+        await asyncio.to_thread(database.ping)
+    except Exception:
+        raise HTTPException(status_code=503, detail="PostgreSQL no disponible")
     return {"status": "ready", "service": SERVICE}
 
 
@@ -210,22 +255,43 @@ async def metrics():
 
 @app.get("/audit")
 async def query_audit(
-    entity_id: str | None = None,
+    entity: str | None = Query(default=None, description="Tipo de entidad: page, book, chapter..."),
+    id: str | None = Query(default=None, description="ID de la entidad"),
+    entity_id: str | None = Query(default=None, description="Alias de id"),
     start: datetime | None = None,
     end: datetime | None = None,
+    limit: int = Query(default=100, ge=1, le=1000),
 ):
-    result = list(records.values())
+    try:
+        items = await asyncio.to_thread(
+            database.query_records,
+            entity_type=entity,
+            entity_id=id or entity_id,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+    except Exception as exc:
+        log_json("ERROR", "Consulta de auditoría fallida", error=str(exc))
+        raise HTTPException(status_code=503, detail="PostgreSQL no disponible")
 
-    if entity_id:
-        result = [r for r in result if r["entity_id"] == entity_id]
-    if start:
-        result = [r for r in result if r.get("occurred_at") and datetime.fromisoformat(r["occurred_at"].replace("Z", "+00:00")) >= start]
-    if end:
-        result = [r for r in result if r.get("occurred_at") and datetime.fromisoformat(r["occurred_at"].replace("Z", "+00:00")) <= end]
+    return {"count": len(items), "items": items}
 
-    return {"count": len(result), "items": result}
+
+@app.get("/audit/{event_id}")
+async def get_audit_record(event_id: str):
+    try:
+        record = await asyncio.to_thread(database.get_record, event_id)
+    except Exception as exc:
+        log_json("ERROR", "Consulta de auditoría fallida", error=str(exc))
+        raise HTTPException(status_code=503, detail="PostgreSQL no disponible")
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Registro no encontrado")
+
+    return record
 
 
 @app.get("/")
 async def root():
-    return {"service": SERVICE, "version": "1.0.0"}
+    return {"service": SERVICE, "version": "2.0.0"}
