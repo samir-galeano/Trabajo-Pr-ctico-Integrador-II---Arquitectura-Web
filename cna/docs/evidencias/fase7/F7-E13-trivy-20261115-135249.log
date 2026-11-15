@@ -1,0 +1,5 @@
+admin1@tp-electiva-vm:/home/admin1/tp2$ ./cna/security/scan-images.sh search-svc:2.0.0 event-bridge:2.0.0 audit-svc:2.0.0 export-svc:2.0.0 media-svc:2.0.0
+# inicio: 2026-11-15 13:52:49.878
+[2026-11-15 13:52:49.968] >>> search-svc:2.0.0
+[2026-11-15 14:12:08.971] | `search-svc:2.0.0` | 0 | 47 | 95 | 66 | 2930 |
+[2026-11-15 14:12:08.981] >>> event-bridge:2.0.0
