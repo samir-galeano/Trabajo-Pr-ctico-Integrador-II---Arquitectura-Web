@@ -1,5 +1,4 @@
 import asyncio
-import os
 import re
 import json
 import time
@@ -8,18 +7,16 @@ import logging
 from html.parser import HTMLParser
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, Request, HTTPException
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from starlette.responses import Response
 
+from app import auth
+from app import bookstack, credentials
+from app.bookstack import BOOKSTACK_URL, BookStackError, CircuitOpenError
 from app.database import initialize, save_page, delete_page, search_pages, connect
 
 SERVICE_NAME = "search-svc"
-BOOKSTACK_URL = os.getenv("BOOKSTACK_BASE_URL", "https://bookstack.local").rstrip("/")
-TOKEN_ID = os.getenv("BOOKSTACK_TOKEN_ID", "")
-TOKEN_SECRET = os.getenv("BOOKSTACK_TOKEN_SECRET", "")
-VERIFY_TLS = os.getenv("BOOKSTACK_VERIFY_TLS", "false").lower() == "true"
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(SERVICE_NAME)
@@ -52,14 +49,6 @@ def extract_text(html):
     return parser.text()
 
 
-def bookstack_headers():
-    return {
-        "Authorization": f"Token {TOKEN_ID}:{TOKEN_SECRET}",
-        "Accept": "application/json",
-        "Host": "bookstack.local"
-    }
-
-
 @asynccontextmanager
 async def lifespan(app):
     initialize()
@@ -84,6 +73,11 @@ app = FastAPI(
     version="1.1.0",
     lifespan=lifespan
 )
+
+
+# Bearer (BearerAuth de los contratos). Se registra antes que el middleware
+# de métricas para quedar por dentro: los 401 también se miden y se loguean.
+app.middleware("http")(auth.middleware)
 
 
 @app.middleware("http")
@@ -126,9 +120,15 @@ async def ready():
         with connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
-        if not TOKEN_ID or not TOKEN_SECRET:
+        if not credentials.has_token():
             raise RuntimeError("BookStack credentials are not configured")
-        return {"status": "ready", "service": SERVICE_NAME}
+        # El circuito abierto no saca al servicio de rotación: la búsqueda
+        # sigue respondiendo desde el índice local (degradación elegante).
+        return {
+            "status": "ready",
+            "service": SERVICE_NAME,
+            "bookstack_circuit": bookstack.breaker.state
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Dependency unavailable: {exc}")
 
@@ -138,40 +138,32 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-def get_bookstack_client():
-    if not TOKEN_ID or not TOKEN_SECRET:
-        raise HTTPException(status_code=503, detail="BookStack credentials missing")
-
-    return httpx.Client(
-        verify=VERIFY_TLS,
-        timeout=30,
-        follow_redirects=False
-    )
+async def get_optional(client, path, request_id):
+    """Datos complementarios: si BookStack responde 4xx se omiten."""
+    try:
+        return await bookstack.get_json(client, path, request_id=request_id)
+    except BookStackError:
+        return None
 
 
 @app.post("/sync")
-def sync_pages():
+async def sync_pages(request: Request):
     """Recorre todas las páginas de BookStack y reconstruye/actualiza el índice."""
+    request_id = request.headers.get("X-Request-ID")
     indexed = 0
     page_number = 1
     count = 100
+    book_slugs = {}
 
     try:
-        with get_bookstack_client() as client:
+        async with bookstack.new_client() as client:
             while True:
-                response = client.get(
-                    f"{BOOKSTACK_URL}/api/pages",
+                payload = await bookstack.get_json(
+                    client,
+                    "/api/pages",
                     params={"count": count, "page": page_number},
-                    headers=bookstack_headers()
+                    request_id=request_id
                 )
-
-                if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=f"BookStack API respondió HTTP {response.status_code}"
-                    )
-
-                payload = response.json()
                 pages = payload.get("data", [])
 
                 if not pages:
@@ -182,28 +174,22 @@ def sync_pages():
                     detail = item
 
                     if not item.get("html"):
-                        detail_response = client.get(
-                            f"{BOOKSTACK_URL}/api/pages/{page_id}",
-                            headers=bookstack_headers()
-                        )
-                        if detail_response.status_code == 200:
-                            detail = detail_response.json()
+                        detail = await get_optional(
+                            client, f"/api/pages/{page_id}", request_id
+                        ) or item
 
                     content = extract_text(detail.get("html", ""))
 
-                    book_slug = ""
                     book_id = detail.get("book_id") or item.get("book_id")
-                    if book_id:
-                        book_response = client.get(
-                            f"{BOOKSTACK_URL}/api/books/{book_id}",
-                            headers=bookstack_headers()
+                    if book_id and book_id not in book_slugs:
+                        book = await get_optional(
+                            client, f"/api/books/{book_id}", request_id
                         )
-                        if book_response.status_code == 200:
-                            book_slug = book_response.json().get("slug", "")
+                        book_slugs[book_id] = (book or {}).get("slug", "")
 
-                    detail["book_slug"] = book_slug
+                    detail["book_slug"] = book_slugs.get(book_id, "")
 
-                    save_page({
+                    await asyncio.to_thread(save_page, {
                         "id": page_id,
                         "name": detail.get("name", item.get("name", "")),
                         "content": content,
@@ -225,8 +211,12 @@ def sync_pages():
 
         return {"status": "completed", "indexed": indexed}
 
-    except HTTPException:
-        raise
+    except CircuitOpenError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+            headers={"Retry-After": str(int(exc.retry_after) + 1)}
+        )
     except Exception as exc:
         logger.exception("Index synchronization failed")
         raise HTTPException(status_code=502, detail=str(exc))

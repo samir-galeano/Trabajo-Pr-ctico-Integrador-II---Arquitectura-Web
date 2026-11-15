@@ -2,18 +2,15 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
 
-import httpx
 import nats
+from opentelemetry import propagate, trace
 
+from app import bookstack
+from app.bookstack import BOOKSTACK_URL, CircuitOpenError
 from app.database import apply_event
-from app.main import (
-    BOOKSTACK_URL,
-    TOKEN_ID,
-    TOKEN_SECRET,
-    VERIFY_TLS,
-    extract_text,
-)
+from app.main import extract_text
 
 logger = logging.getLogger("search-svc.events")
 
@@ -24,6 +21,46 @@ SUBJECT = "bookstack.content.events"
 DLQ_STREAM = "BOOKSTACK_DLQ"
 DLQ_SUBJECT = "bookstack.content.dlq"
 MAX_DELIVERIES = 5
+
+tracer = trace.get_tracer("search-svc")
+
+
+def log_json(level, message, request_id="-", **extra):
+    """Una línea JSON con request_id, para correlacionar en Loki."""
+    logger.log(getattr(logging, level), json.dumps({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "service": "search-svc",
+        "request_id": request_id,
+        "message": message,
+        **extra
+    }, ensure_ascii=False))
+
+
+def message_request_id(message):
+    headers = dict(message.headers or {})
+    if headers.get("X-Request-ID"):
+        return headers["X-Request-ID"]
+    try:
+        return json.loads(message.data.decode()).get("request_id", "-")
+    except (ValueError, AttributeError):
+        return "-"
+
+
+def consumer_span(message):
+    """Tramo de consumo hijo del publish de event-bridge (traceparent en las cabeceras NATS)."""
+    headers = dict(message.headers or {})
+    return tracer.start_as_current_span(
+        f"process {SUBJECT}",
+        context=propagate.extract(headers),
+        kind=trace.SpanKind.CONSUMER,
+        attributes={
+            "messaging.system": "nats",
+            "messaging.destination.name": message.subject,
+            "messaging.consumer.group.name": DURABLE,
+            "request_id": headers.get("X-Request-ID", ""),
+        },
+    )
 
 
 async def process_message(message):
@@ -46,35 +83,18 @@ async def process_message(message):
         event_type.endswith("page.updated")
         or event_type.endswith("page.created")
     ):
-        if not TOKEN_ID or not TOKEN_SECRET:
-            raise RuntimeError("Credenciales BookStack no configuradas")
-
-        headers = {
-            "Authorization": f"Token {TOKEN_ID}:{TOKEN_SECRET}",
-            "Accept": "application/json",
-            "Host": "bookstack.local",
-        }
-
-        async with httpx.AsyncClient(
-            verify=VERIFY_TLS,
-            timeout=30
-        ) as client:
-            response = await client.get(
-                f"{BOOKSTACK_URL}/api/pages/{page_id}",
-                headers=headers
+        async with bookstack.new_client() as client:
+            page = await bookstack.get_json(
+                client, f"/api/pages/{page_id}", request_id=request_id
             )
-            response.raise_for_status()
-            page = response.json()
 
             book_slug = ""
             book_id = page.get("book_id")
             if book_id:
-                book_response = await client.get(
-                    f"{BOOKSTACK_URL}/api/books/{book_id}",
-                    headers=headers
+                book = await bookstack.get_json(
+                    client, f"/api/books/{book_id}", request_id=request_id
                 )
-                book_response.raise_for_status()
-                book_slug = book_response.json().get("slug", "")
+                book_slug = book.get("slug", "")
 
             page_data = {
                 "id": page["id"],
@@ -92,15 +112,13 @@ async def process_message(message):
     else:
         raise ValueError(f"Tipo de evento no soportado: {event_type}")
 
-    logger.info(json.dumps({
-        "level": "INFO",
-        "service": "search-svc",
-        "request_id": request_id,
-        "message": (
-            f"Evento aplicado: {event_type}"
-            if applied else f"Evento duplicado ignorado: {event_id}"
-        )
-    }))
+    log_json(
+        "INFO",
+        f"Evento aplicado: {event_type}" if applied else "Evento duplicado ignorado",
+        request_id,
+        event_id=event_id,
+        page_id=page_id
+    )
 
     await message.ack()
 
@@ -123,17 +141,34 @@ async def send_to_dlq(js, message, error):
     await js.publish(DLQ_SUBJECT, message.data, headers=headers)
     await message.ack()
 
-    logger.error(json.dumps({
-        "level": "ERROR",
-        "service": "search-svc",
-        "message": "Evento enviado a DLQ",
-        "stream_sequence": metadata.sequence.stream,
-        "delivery_count": metadata.num_delivered,
-        "reason": reason
-    }))
+    log_json(
+        "ERROR",
+        "Evento enviado a DLQ",
+        message_request_id(message),
+        stream_sequence=metadata.sequence.stream,
+        delivery_count=metadata.num_delivered,
+        reason=reason
+    )
 
 
 async def consume_events():
+    """Consume para siempre: si NATS o el stream no están (arranque en Swarm,
+    reinicio de NATS en X4), reintenta en lugar de dejar el consumidor muerto."""
+    while True:
+        try:
+            await consume_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            log_json(
+                "ERROR",
+                "Consumidor desconectado, reintentando en 3 s",
+                error=f"{type(error).__name__}: {error}"
+            )
+            await asyncio.sleep(3)
+
+
+async def consume_once():
     nc = await nats.connect(NATS_URL)
     js = nc.jetstream()
 
@@ -143,25 +178,53 @@ async def consume_events():
         stream=STREAM
     )
 
-    logger.info("Consumidor durable SEARCH_CONSUMER conectado")
+    log_json("INFO", "Consumidor durable SEARCH_CONSUMER conectado")
 
     try:
         while True:
+            # Con el circuito abierto no se piden mensajes: quedan en el
+            # stream (durables) hasta que BookStack vuelva a responder.
+            wait = bookstack.breaker.retry_after()
+            if wait > 0:
+                await asyncio.sleep(wait)
+                continue
+
             try:
                 messages = await subscription.fetch(batch=10, timeout=2)
                 for message in messages:
                     try:
-                        await process_message(message)
+                        with consumer_span(message):
+                            await process_message(message)
+                    except CircuitOpenError as error:
+                        # No es culpa del evento: no cuenta para la DLQ.
+                        log_json(
+                            "WARNING",
+                            "Circuito abierto, evento devuelto al stream",
+                            message_request_id(message),
+                            retry_after=round(error.retry_after, 1)
+                        )
+                        await message.nak(delay=max(error.retry_after, 1))
                     except Exception as error:
                         metadata = message.metadata
                         if metadata.num_delivered >= MAX_DELIVERIES:
                             try:
                                 await send_to_dlq(js, message, error)
-                            except Exception:
-                                logger.exception("No se pudo publicar en DLQ")
+                            except Exception as dlq_error:
+                                log_json(
+                                    "ERROR",
+                                    "No se pudo publicar en DLQ",
+                                    message_request_id(message),
+                                    error=str(dlq_error)
+                                )
                                 await message.nak()
                         else:
-                            logger.exception("Error procesando evento")
+                            log_json(
+                                "ERROR",
+                                "Error procesando evento",
+                                message_request_id(message),
+                                error=f"{type(error).__name__}: {error}",
+                                delivery=metadata.num_delivered
+                            )
                             await message.nak()
             except asyncio.TimeoutError:
                 continue
