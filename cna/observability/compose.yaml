@@ -20,7 +20,7 @@ services:
       - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "${VM2_IP:-192.168.0.6}:9090:9090"
     networks:
       - cna-net
     restart: unless-stopped
@@ -54,7 +54,7 @@ services:
       - ./loki/loki.yml:/etc/loki/loki.yml:ro
       - loki-data:/loki
     ports:
-      - "3100:3100"
+      - "${VM2_IP:-192.168.0.6}:3100:3100"
     networks:
       - cna-net
     restart: unless-stopped
@@ -94,7 +94,7 @@ services:
   jaeger:
     image: jaegertracing/jaeger:2.10.0
     ports:
-      - "16686:16686"
+      - "${VM2_IP:-192.168.0.6}:16686:16686"
     networks:
       - cna-net
     restart: unless-stopped
@@ -117,7 +117,7 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "${VM2_IP:-192.168.0.6}:3000:3000"
     networks:
       - cna-net
     depends_on:
