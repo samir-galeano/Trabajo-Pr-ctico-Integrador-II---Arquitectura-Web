@@ -1,0 +1,13 @@
+[Unit]
+Description=Reglas de firewall para puertos Docker
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/configurar-docker-user.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
