@@ -24,7 +24,7 @@ Antes de las correcciones (H-02 y H-03), `media-svc` tenía 5 CRITICAL y todas l
 | H-04 | 47 HIGH en paquetes de Debian 13 sin parche publicado (`util-linux`, `mount`, `login`, `libblkid1`, `libsqlite3-0`, `ncurses`, `libsystemd0`, `perl-base` *fix_deferred*, etc.). | Alta | Riesgo aceptado | No hay versión corregida. Son utilidades del sistema que los servicios no ejecutan; los contenedores corren como UID 10001, con `read_only: true` y sin puertos más allá del suyo. Se vuelve a escanear en cada entrega; si aparece el parche, `apt-get upgrade` lo aplica al reconstruir. |
 | H-05 | Rotar el token de la API de BookStack obligaba a recrear search-svc y export-svc (corte de servicio). | Media | Corregido | El token se lee de `cna/deploy/secrets/token` y se recarga en caliente al cambiar (`app/credentials.py`). Procedimiento: `cna/security/rotate-bookstack-token.sh` (F7-E14). |
 | H-06 | Alloy monta `/var/run/docker.sock` (de solo lectura) para leer los logs de los contenedores. El acceso al socket equivale a control del daemon de Docker. | Media | Riesgo aceptado | Montaje `:ro`, Alloy sin puertos publicados y en la red interna. Alternativa descartada: el driver de logging de Loki, que exige instalar un plugin en cada nodo y no queda en el repositorio. |
-| H-07 | Los puertos de los servicios (8000–8004), MinIO (9000/9001) y observabilidad (3000, 9090, 3100, 16686) se publican en VM-2 (y, con Swarm, en todos los nodos por la routing mesh). **Las reglas de UFW no los filtran:** Docker inserta sus reglas de iptables (cadenas `DOCKER` / `DOCKER-INGRESS`) antes que las de UFW, así que un `ufw allow from 192.168.100.23` no impide que otro host llegue a esos puertos. | Alta | Corregir en las VM | Filtrar en la cadena `DOCKER-USER`, que Docker evalúa antes que las suyas: solo 192.168.100.23 (gateway) a los puertos de servicio, y la red del laboratorio a Grafana, Prometheus y Jaeger. Comandos y verificación al final de este documento. El exterior sigue entrando únicamente por 443 de VM-1. |
+| H-07 | Los puertos de los servicios (8000–8004), MinIO (9000/9001) y observabilidad (3000, 9090, 3100, 16686) se publican en VM-2 (y, con Swarm, en todos los nodos por la routing mesh). **Las reglas de UFW no los filtran:** Docker inserta sus reglas de iptables (cadenas `DOCKER` / `DOCKER-INGRESS`) antes que las de UFW, así que un `ufw allow from 192.168.100.23` no impide que otro host llegue a esos puertos. | Alta | Corregido | Puertos atados a la IP de VM-2 (`VM2_IP`) y filtrados en la cadena `DOCKER-USER` (que Docker evalúa antes que las suyas) con `cna/deploy/host-configs/vm2/configurar-docker-user.sh`: servicios, MinIO y Loki solo desde VM-1; Grafana, Prometheus y Jaeger solo desde la red del laboratorio. Las reglas llevan `-i <interfaz externa>`: sin eso también cortan el tráfico entre contenedores. MinIO se descarga por el gateway (`/bookstack-exports/`), así que el exterior sigue entrando únicamente por 443 de VM-1. |
 | H-09 | La API pública (`/v2/search`, `/v2/audit`, `/v2/exports`, `/v2/media`) no tenía autenticación, aunque los contratos declaraban `BearerAuth`: cualquiera que llegara al gateway podía consultar la auditoría o generar exportaciones. | Alta | Corregido | Middleware Bearer en los cuatro servicios (`app/auth.py`): con `API_AUTH_TOKEN` definido, responde 401 sin un token válido (comparación en tiempo constante). Admite varios tokens para rotarlos sin corte. `/healthz`, `/readyz` y `/metrics` quedan abiertos para el orquestador y Prometheus. Cubierto por `tests/test_auth.py` en cada servicio. |
 | H-08 | Las imágenes se etiquetaban solo con versión semántica (`search-svc:2.0.0`): dos construcciones distintas podían tener la misma etiqueta (B3 pide versión más hash del commit). | Baja | Corregido (Swarm) | `deploy.sh` etiqueta `<versión>-<commit>` (por ejemplo `2.0.0-a1b2c3d`; `-dirty` si hay cambios sin commit) y despliega por esa etiqueta desde el registry del clúster. Compose, que queda para desarrollo, conserva `x.y.z`. |
 
@@ -34,19 +34,13 @@ Un archivo CycloneDX por imagen en `sbom/` (`<imagen>.cdx.json`), generado con S
 
 ## Corrección de H-07: filtrar los puertos publicados por Docker
 
-En VM-2 (y en cada nodo del Swarm), cambiando `<RED-LAB>` por la red desde la que se abre Grafana (por ejemplo `192.168.100.0/24`):
+Script: `cna/deploy/host-configs/vm2/configurar-docker-user.sh`, aplicado al arrancar Docker por el servicio `docker-user-firewall` (systemd).
 
 ```bash
-# Puertos de servicio, MinIO y Loki: solo el gateway (VM-1)
-sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL \
-  -m multiport --ctorigdstport 8000:8004,9000,9001,3100 ! -s 192.168.100.23 -j DROP
-# Grafana, Prometheus y Jaeger: solo la red del laboratorio
-sudo iptables -I DOCKER-USER -p tcp -m conntrack --ctdir ORIGINAL \
-  -m multiport --ctorigdstport 3000,9090,16686 ! -s <RED-LAB> -j DROP
-
-sudo apt install iptables-persistent && sudo netfilter-persistent save   # persistir
+sudo install -m 755 cna/deploy/host-configs/vm2/configurar-docker-user.sh /usr/local/sbin/
+sudo systemctl restart docker-user-firewall
 ```
 
-Si la versión de iptables no acepta `-m multiport --ctorigdstport`, usar una regla por puerto o rango (`-m conntrack --ctorigdstport 8000:8004`).
+Importante: cada regla lleva `-i <interfaz externa>`. La cadena `DOCKER-USER` también ve el tráfico entre contenedores de la misma red (`br_netfilter`); una regla sin `-i` del tipo "DROP al 9000 salvo VM-1" corta export→MinIO, Alloy→Loki o Prometheus→servicios.
 
-Verificación: desde el anfitrión, `curl -m 3 http://<IP-VM-2>:8000/healthz` debe fallar; desde VM-1 debe responder. Evidencia: `sudo iptables -L DOCKER-USER -n -v` junto con `sudo ufw status verbose`.
+Verificación (evidencia F6-E2): desde el anfitrión, `curl -m 3 http://<IP-VM-2>:8000/healthz` y `:9000` deben fallar y Grafana (`:3000`) debe abrir; desde VM-1, `:8000/healthz` responde. Adjuntar `sudo iptables -L DOCKER-USER -n -v` junto con `sudo ufw status verbose`.
