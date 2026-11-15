@@ -1,17 +1,20 @@
-﻿
-openapi: 3.1.0
+﻿openapi: 3.1.0
 
 info:
   title: Export Service API
   version: 2.0.0
-  description: API para solicitar y consultar exportaciones de contenido de BookStack.
+  description: |
+    API para solicitar y consultar exportaciones de páginas y libros de
+    BookStack a PDF o Markdown. La API solo encola el trabajo en Redis y
+    responde 202; un export-worker separado lo ejecuta, guarda el archivo
+    en MinIO y marca el job como done.
   license:
     name: Proprietary
     identifier: LicenseRef-Proprietary
 
 servers:
-  - url: http://localhost:8003/api/v2
-    description: Servidor local de desarrollo
+  - url: https://api.bookstack.local/v2
+    description: API Gateway (Nginx, TLS 1.3)
 
 tags:
   - name: Exports
@@ -27,39 +30,55 @@ paths:
         - Exports
       summary: Solicitar una exportación
       operationId: createExport
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/ExportRequest"
+            examples:
+              page:
+                value:
+                  page_id: 12
+                  format: pdf
+              book:
+                value:
+                  book_id: 3
+                  format: markdown
       responses:
         "202":
-          description: Solicitud de exportación aceptada.
+          description: Job aceptado y encolado.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ExportJob"
+                $ref: "#/components/schemas/ExportAccepted"
+              example:
+                job_id: 6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10
+                status: queued
+                status_url: /v2/exports/6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10
         "400":
-          description: Solicitud inválida.
+          $ref: "#/components/responses/BadRequest"
         "401":
-          description: No autenticado.
-        "500":
-          description: Error interno del servicio.
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
     get:
       tags:
         - Exports
-      summary: Listar exportaciones
+      summary: Listar las exportaciones más recientes
       operationId: listExports
       parameters:
-        - name: page
+        - name: limit
           in: query
           required: false
           schema:
             type: integer
             minimum: 1
-            default: 1
+            maximum: 200
+            default: 50
       responses:
         "200":
           description: Lista de exportaciones.
@@ -68,16 +87,18 @@ paths:
               schema:
                 $ref: "#/components/schemas/ExportJobList"
         "401":
-          description: No autenticado.
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
-  /exports/{export_id}:
+  /exports/{job_id}:
     get:
       tags:
         - Exports
       summary: Consultar el estado de una exportación
       operationId: getExport
       parameters:
-        - name: export_id
+        - name: job_id
           in: path
           required: true
           schema:
@@ -85,87 +106,180 @@ paths:
             format: uuid
       responses:
         "200":
-          description: Estado de la exportación.
+          description: Estado del job. Si está en done incluye una URL prefirmada que expira.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExportJob"
-        "401":
-          description: No autenticado.
+              example:
+                job_id: 6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10
+                status: done
+                entity_type: page
+                entity_id: 12
+                format: pdf
+                attempts: 1
+                created_at: "2026-11-15T14:00:00+00:00"
+                updated_at: "2026-11-15T14:00:03+00:00"
+                completed_at: "2026-11-15T14:00:03+00:00"
+                object_key: exports/6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10.pdf
+                download_url: http://192.168.0.6:9000/bookstack-exports/exports/6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10.pdf?X-Amz-Expires=900
+                expires_in: 900
         "404":
-          description: Exportación no encontrada.
+          $ref: "#/components/responses/NotFound"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 
 components:
   securitySchemes:
     BearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      description: 'Token opaco (API key) configurado en API_AUTH_TOKEN, enviado como "Authorization: Bearer <token>". /healthz, /readyz y /metrics no lo requieren; sin token o con uno inválido se responde 401.'
+
+  parameters:
+    RequestId:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Identificador de correlación generado por el gateway.
+      schema:
+        type: string
+
+  responses:
+    Unauthorized:
+      description: No autenticado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadRequest:
+      description: Solicitud inválida (falta page_id/book_id, ambos presentes o formato no soportado).
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Job no encontrado.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unavailable:
+      description: Redis (cola de jobs) no disponible.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
 
   schemas:
     ExportRequest:
       type: object
-      required:
-        - entity_type
-        - entity_id
-        - format
+      description: Debe indicarse exactamente uno de page_id o book_id.
       properties:
-        entity_type:
-          type: string
-          enum:
-            - book
-            - chapter
-            - page
-        entity_id:
+        page_id:
+          type: integer
+          minimum: 1
+        book_id:
           type: integer
           minimum: 1
         format:
           type: string
           enum:
-            - zip
             - pdf
+            - markdown
+          default: pdf
+      oneOf:
+        - required:
+            - page_id
+        - required:
+            - book_id
 
-    ExportJobList:
+    ExportAccepted:
       type: object
       required:
-        - items
-        - page
-        - total
+        - job_id
+        - status
+        - status_url
       properties:
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/ExportJob"
-        page:
-          type: integer
-        total:
-          type: integer
+        job_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          const: queued
+        status_url:
+          type: string
 
     ExportJob:
       type: object
       required:
-        - export_id
+        - job_id
         - status
         - created_at
       properties:
-        export_id:
+        job_id:
           type: string
           format: uuid
         status:
           type: string
           enum:
-            - pending
-            - processing
-            - completed
+            - queued
+            - running
+            - done
             - failed
-        download_url:
+        entity_type:
           type: string
-          format: uri
+          enum:
+            - page
+            - book
+        entity_id:
+          type: integer
+        format:
+          type: string
+          enum:
+            - pdf
+            - markdown
+        attempts:
+          type: integer
+          description: Veces que un worker tomó el job (incluye reintentos tras una caída).
+        request_id:
+          type: string
         created_at:
+          type: string
+          format: date-time
+        updated_at:
           type: string
           format: date-time
         completed_at:
           type: string
           format: date-time
+        object_key:
+          type: string
+        download_url:
+          type: string
+          format: uri
+        expires_in:
+          type: integer
+          description: Segundos de validez de download_url.
         error:
           type: string
+
+    ExportJobList:
+      type: object
+      required:
+        - count
+        - items
+      properties:
+        count:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExportJob"
+
+    Error:
+      type: object
+      properties:
+        detail: {}

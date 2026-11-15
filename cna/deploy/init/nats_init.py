@@ -17,6 +17,7 @@ STREAMS = [
     ("BOOKSTACK", ["bookstack.content.events"]),
     ("BOOKSTACK_DLQ", ["bookstack.content.dlq"]),
     ("MEDIA", ["media.uploaded"]),
+    ("EXPORT", ["bookstack.export.events"]),
 ]
 
 

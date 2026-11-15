@@ -37,7 +37,10 @@ channels:
 
   exportEvents:
     address: bookstack.export.events
+    description: Ciclo de vida de los jobs de exportación (stream EXPORT de JetStream).
     messages:
+      exportRequested:
+        $ref: "#/components/messages/ExportRequested"
       exportCompleted:
         $ref: "#/components/messages/ExportCompleted"
       exportFailed:
@@ -94,8 +97,17 @@ operations:
     messages:
       - $ref: "#/channels/auditEvents/messages/activityRecorded"
 
+  publishExportRequested:
+    action: send
+    summary: export-svc publica el evento al encolar un job (POST /v2/exports).
+    channel:
+      $ref: "#/channels/exportEvents"
+    messages:
+      - $ref: "#/channels/exportEvents/messages/exportRequested"
+
   publishExportCompleted:
     action: send
+    summary: export-worker publica el evento al guardar el archivo en MinIO.
     channel:
       $ref: "#/channels/exportEvents"
     messages:
@@ -103,6 +115,7 @@ operations:
 
   publishExportFailed:
     action: send
+    summary: export-worker publica el evento cuando un job falla sin más reintentos.
     channel:
       $ref: "#/channels/exportEvents"
     messages:
@@ -152,17 +165,72 @@ components:
       payload:
         $ref: "#/components/schemas/EventEnvelope"
 
+    ExportRequested:
+      name: ExportRequested
+      title: Exportación solicitada
+      summary: "type = export.requested; payload: ExportJobPayload."
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+      examples:
+        - name: exportRequested
+          payload:
+            event_id: 0b7e1c52-4d1a-4f6e-9a0d-3c2b1a0f9e81
+            type: export.requested
+            version: "1.0"
+            occurred_at: "2026-11-15T14:00:00+00:00"
+            request_id: 9c1f6a2e0b7d4e3a8f5c2b1a0d9e8f7c
+            payload:
+              job_id: 6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10
+              entity_type: page
+              entity_id: 12
+              format: pdf
+              attempts: 0
+
     ExportCompleted:
       name: ExportCompleted
       title: Exportación completada
+      summary: "type = export.completed; payload: ExportJobPayload + object_key, size_bytes, bucket."
       payload:
         $ref: "#/components/schemas/EventEnvelope"
+      examples:
+        - name: exportCompleted
+          payload:
+            event_id: 5a2d9e70-1b3c-4e8f-a6d2-7c9b0e1f2a34
+            type: export.completed
+            version: "1.0"
+            occurred_at: "2026-11-15T14:00:03+00:00"
+            request_id: 9c1f6a2e0b7d4e3a8f5c2b1a0d9e8f7c
+            payload:
+              job_id: 6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10
+              entity_type: page
+              entity_id: 12
+              format: pdf
+              attempts: 1
+              object_key: exports/6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10.pdf
+              size_bytes: 48213
+              bucket: bookstack-exports
 
     ExportFailed:
       name: ExportFailed
       title: Exportación fallida
+      summary: "type = export.failed; payload: ExportJobPayload + error."
       payload:
         $ref: "#/components/schemas/EventEnvelope"
+      examples:
+        - name: exportFailed
+          payload:
+            event_id: 8e4f2a10-6c7d-4b9e-b1a3-2d5c8f0e7a96
+            type: export.failed
+            version: "1.0"
+            occurred_at: "2026-11-15T14:00:05+00:00"
+            request_id: 9c1f6a2e0b7d4e3a8f5c2b1a0d9e8f7c
+            payload:
+              job_id: 6f1c2a52-8a3e-4c63-9a55-2c4d1f1e9b10
+              entity_type: page
+              entity_id: 999
+              format: pdf
+              attempts: 1
+              error: BookStack respondió HTTP 404 para page 999
 
     MediaUploaded:
       name: MediaUploaded
