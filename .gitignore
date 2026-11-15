@@ -21,3 +21,4 @@ cna/services/export-svc/.env
 /compose.yaml.damaged
 /compose.yaml.respaldo
 *.bak
+/compose.yaml.backup-ca7

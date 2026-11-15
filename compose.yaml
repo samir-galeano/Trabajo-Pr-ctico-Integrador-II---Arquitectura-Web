@@ -192,6 +192,12 @@ services:
     restart: unless-stopped
     cpus: 0.50
     mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
 
   export-svc:
     image: export-svc:1.1.0
@@ -223,8 +229,10 @@ services:
 # Se mantienen los nombres fijos para reutilizar los datos de despliegues previos.
 volumes:
   search-index-data:
+    external: true
     name: search-index-data
   nats-data:
+    external: true
     name: nats-data
   audit-data:
     name: audit-data
@@ -233,4 +241,5 @@ volumes:
 
 networks:
   cna-net:
+    external: true
     name: cna-net
