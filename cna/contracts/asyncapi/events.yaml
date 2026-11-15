@@ -20,6 +20,8 @@ channels:
     messages:
       pageUpdated:
         $ref: "#/components/messages/PageUpdated"
+      pageDeleted:
+        $ref: "#/components/messages/PageDeleted"
 
   searchEvents:
     address: bookstack.search.events
@@ -63,6 +65,13 @@ operations:
       $ref: "#/channels/contentEvents"
     messages:
       - $ref: "#/channels/contentEvents/messages/pageUpdated"
+
+  consumePageDeletedSearch:
+    action: receive
+    channel:
+      $ref: "#/channels/contentEvents"
+    messages:
+      - $ref: "#/channels/contentEvents/messages/pageDeleted"
 
   consumePageUpdatedAudit:
     action: receive
@@ -119,6 +128,13 @@ components:
       name: PageUpdated
       title: Página actualizada
       summary: Notificación emitida cuando una página de BookStack es modificada.
+      payload:
+        $ref: "#/components/schemas/EventEnvelope"
+
+    PageDeleted:
+      name: PageDeleted
+      title: Página eliminada
+      summary: Notificación emitida cuando una página de BookStack es eliminada.
       payload:
         $ref: "#/components/schemas/EventEnvelope"
 

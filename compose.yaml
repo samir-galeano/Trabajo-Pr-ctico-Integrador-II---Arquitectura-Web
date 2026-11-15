@@ -1,0 +1,200 @@
+services:
+  search-index-db:
+    image: postgres:16-alpine
+    container_name: search-index-db
+    env_file:
+      - ./cna/deploy/postgres.env
+    volumes:
+      - search-index-data:/var/lib/postgresql/data
+    networks:
+      - cna-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  media-svc:
+    image: media-svc:1.0.0
+    build:
+      context: ./cna/services/media-svc
+    container_name: media-svc
+    env_file:
+      - ./cna/services/export-svc/.env
+    environment:
+      MINIO_BUCKET: bookstack-media
+      NATS_URL: nats://nats:4222
+    ports:
+      - "8004:8004"
+    networks:
+      - cna-net
+    depends_on:
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  nats:
+    image: nats:2-alpine
+    container_name: nats
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    networks:
+      - cna-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8222/healthz >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  search-svc:
+    image: search-svc:1.1.6-545969a
+    build:
+      context: ./cna/services/search-svc
+    container_name: search-svc
+    env_file:
+      - ./cna/services/search-svc/.env
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "bookstack.local:192.168.0.17"
+    networks:
+      - cna-net
+    depends_on:
+      search-index-db:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  audit-svc:
+    image: audit-svc:1.0.0-545969a
+    build:
+      context: ./cna/services/audit-svc
+    env_file:
+      - ./cna/services/audit-svc/.env
+    ports:
+      - "8002:8002"
+    volumes:
+      - audit-data:/data
+    networks:
+      - cna-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/healthz')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  event-bridge:
+    image: event-bridge:1.0.0
+    build:
+      context: ./cna/services/event-bridge
+    container_name: event-bridge
+    env_file:
+      - ./cna/services/event-bridge/.env
+    ports:
+      - "8001:8001"
+    networks:
+      - cna-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  minio:
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    container_name: minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    env_file:
+      - path: ./cna/deploy/minio/.env
+        format: raw
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - cna-net
+    restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 512m
+
+  export-svc:
+    image: export-svc:1.1.0
+    build:
+      context: ./cna/services/export-svc
+    container_name: export-svc
+    env_file:
+      - ./cna/services/export-svc/.env
+    ports:
+      - "8003:8003"
+    extra_hosts:
+      - "bookstack.local:192.168.0.17"
+    networks:
+      - cna-net
+    depends_on:
+      minio:
+        condition: service_started
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  search-index-data:
+    external: true
+    name: search-index-data
+  nats-data:
+    external: true
+    name: nats-data
+  audit-data:
+    external: true
+    name: audit-data
+  minio-data:
+    external: true
+    name: minio-data
+
+networks:
+  cna-net:
+    external: true
+    name: cna-net

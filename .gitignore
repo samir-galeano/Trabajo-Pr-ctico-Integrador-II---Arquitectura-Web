@@ -1,0 +1,23 @@
+cna/services/search-svc/.env
+cna/services/event-bridge/.env
+cna/deploy/postgres.env
+# Credenciales de MinIO y microservicios
+cna/deploy/minio/.env
+cna/services/export-svc/.env
+
+# Entornos virtuales y archivos temporales de Python
+**/.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secretos y configuraciones locales
+**/.env
+**/*.env
+*.key
+*.pem
+
+# Respaldos locales de Compose
+/compose.yaml.damaged
+/compose.yaml.respaldo
+*.bak
