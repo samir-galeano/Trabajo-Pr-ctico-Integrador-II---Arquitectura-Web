@@ -1,0 +1,151 @@
+# Stack de observabilidad (C3). Se incluye desde el compose.yaml raíz, así
+# "docker compose up -d" levanta todo con un comando. Las rutas son
+# relativas a esta carpeta.
+#
+#   Grafana     http://<VM-2>:3000   (admin / GRAFANA_ADMIN_PASSWORD de grafana.env)
+#   Prometheus  http://<VM-2>:9090   (Alerts: reglas y estado)
+#   Jaeger      http://<VM-2>:16686
+#   Loki        http://<VM-2>:3100   (solo para el Alloy de VM-1; UFW: solo 192.168.100.23)
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - cna-net
+    restart: unless-stopped
+    read_only: true
+    cpus: 0.50
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Profundidad de streams y consumidores de JetStream para Prometheus
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.17.3
+    command: ["-varz", "-connz", "-jsz=all", "http://nats:8222"]
+    networks:
+      - cna-net
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    cpus: 0.10
+    mem_limit: 64m
+
+  loki:
+    image: grafana/loki:3.5.5
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - cna-net
+    restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3100/ready"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  # Lee el stdout de los contenedores y lo envía a Loki.
+  alloy:
+    image: grafana/alloy:v1.11.0
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    environment:
+      NODE_NAME: ${NODE_NAME:-vm-2}
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    networks:
+      - cna-net
+    depends_on:
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: 0.25
+    mem_limit: 192m
+
+  # Jaeger v2: recibe OTLP directamente (4317 gRPC / 4318 HTTP) y guarda en memoria.
+  jaeger:
+    image: jaegertracing/jaeger:2.10.0
+    ports:
+      - "16686:16686"
+    networks:
+      - cna-net
+    restart: unless-stopped
+    read_only: true
+    cpus: 0.50
+    mem_limit: 384m
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    env_file:
+      - path: ./grafana.env
+        format: raw
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cna-red.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - cna-net
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+    cpus: 0.50
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+volumes:
+  prometheus-data:
+    name: prometheus-data
+  loki-data:
+    name: loki-data
+  alloy-data:
+    name: alloy-data
+  grafana-data:
+    name: grafana-data
+
+networks:
+  cna-net:
+    external: true
+    name: cna-net

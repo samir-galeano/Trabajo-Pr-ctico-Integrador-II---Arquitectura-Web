@@ -1,0 +1,2 @@
+# Los scripts se ejecutan en Linux (VM-1/VM-2): siempre LF, también en Windows
+*.sh text eol=lf

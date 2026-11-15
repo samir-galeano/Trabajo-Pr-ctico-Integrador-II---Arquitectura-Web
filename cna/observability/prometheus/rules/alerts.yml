@@ -1,0 +1,58 @@
+# Reglas de alerta (C3). Se ven en Prometheus > Alerts y en Grafana.
+# Cada una está pensada para dispararse en un experimento de C1.
+groups:
+  - name: cna-alerts
+    rules:
+      # X1 (docker kill de search-svc) y X4 (apagado de VM-2)
+      - alert: ServiceDown
+        expr: up{job=~"search-svc|event-bridge|audit-svc|export-svc|media-svc|export-worker|nats"} == 0
+        for: 15s
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} no responde ({{ $labels.instance }})"
+          description: "Prometheus no puede leer /metrics de {{ $labels.instance }} desde hace más de 15 s."
+
+      # Requisito del PDF: errores 5xx > 5 % durante 1 minuto
+      - alert: HighErrorRate
+        expr: job:http_errors:ratio1m > 0.05
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.job }}: {{ $value | humanizePercentage }} de respuestas 5xx"
+
+      # Requisito del PDF: mensajes en DLQ. El stream conserva los mensajes,
+      # por eso se alerta sobre los que llegaron en los últimos 5 minutos.
+      - alert: DeadLetterMessages
+        expr: delta(jetstream_stream_total_messages{stream_name="BOOKSTACK_DLQ"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Llegaron {{ $value }} mensajes nuevos a la DLQ"
+
+      # X2: consumidor detenido mientras se editan páginas
+      - alert: ConsumerBacklog
+        expr: jetstream_consumer_num_pending{stream_name="BOOKSTACK"} > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.consumer_name }} tiene {{ $value }} eventos pendientes"
+
+      # X5: latencia hacia BookStack abre el circuito de search-svc
+      - alert: BookStackCircuitOpen
+        expr: bookstack_circuit_state == 2
+        labels:
+          severity: warning
+        annotations:
+          summary: "search-svc abrió el circuito hacia la API de BookStack"
+
+      # X3: jobs de exportación que no avanzan
+      - alert: ExportJobsStuck
+        expr: export_queue_depth{queue="processing"} > 0 unless on() sum(increase(export_worker_jobs_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Hay jobs de exportación en curso pero ningún worker terminó jobs en 5 minutos"

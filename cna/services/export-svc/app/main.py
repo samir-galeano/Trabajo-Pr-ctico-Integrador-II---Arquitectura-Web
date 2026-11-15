@@ -1,54 +1,36 @@
-import os
-import json
+"""export-svc (API): recibe pedidos de exportación y los encola en Redis.
+
+No ejecuta exportaciones: eso lo hace export-worker (app.worker), un
+proceso separado que comparte la imagen. El gateway publica estas rutas
+como /v2/exports.
+"""
 import uuid
 import time
-import csv
-import io
-import threading
-from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
+from typing import Literal, Optional
 
-import boto3
-import httpx
-from botocore.client import Config
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
-from pydantic import BaseModel, Field
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from opentelemetry import propagate
+from pydantic import BaseModel, Field, model_validator
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
-
-SERVICE = "export-svc"
-
-# MinIO
-BUCKET = os.getenv("MINIO_BUCKET", "bookstack-exports")
-ENDPOINT = os.getenv("MINIO_ENDPOINT", "http://minio:9000")
-PUBLIC_ENDPOINT = os.getenv(
-    "MINIO_PUBLIC_ENDPOINT",
-    "http://192.168.0.6:9000"
+from app import auth
+from app import credentials, events
+from app.common import (
+    BUCKET,
+    JOBS_INDEX,
+    URL_EXPIRES,
+    enqueue_job,
+    get_job,
+    get_redis,
+    get_s3,
+    log_json,
+    now_iso,
+    presigned_url,
+    queue_depths,
 )
-ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
-SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
 
-# BookStack API
-BOOKSTACK_URL = os.getenv(
-    "BOOKSTACK_BASE_URL",
-    "https://bookstack.local"
-).rstrip("/")
-TOKEN_ID = os.getenv("BOOKSTACK_TOKEN_ID", "")
-TOKEN_SECRET = os.getenv("BOOKSTACK_TOKEN_SECRET", "")
-VERIFY_TLS = os.getenv(
-    "BOOKSTACK_VERIFY_TLS",
-    "false"
-).lower() == "true"
-
-PAGE_COUNT = 100
-
-jobs = {}
-jobs_lock = threading.Lock()
-
-# Pool de trabajadores durante toda la vida del proceso.
-# No se apaga al cerrar cada ciclo de pruebas HTTP.
-executor = ThreadPoolExecutor(max_workers=2)
 
 REQUESTS = Counter(
     "export_http_requests_total",
@@ -58,272 +40,71 @@ REQUESTS = Counter(
 
 DURATION = Histogram(
     "export_http_request_duration_seconds",
-    "HTTP request duration"
+    "HTTP request duration",
+    ["method", "path"]
+)
+
+QUEUE_DEPTH = Gauge(
+    "export_queue_depth",
+    "Jobs en cada lista de Redis",
+    ["queue"]
+)
+
+JOBS_CREATED = Counter(
+    "export_jobs_created_total",
+    "Jobs de exportación encolados",
+    ["format"]
 )
 
 
 class ExportRequest(BaseModel):
-    format: str = Field(default="json", pattern="^(json|csv)$")
-    entity: str = Field(default="pages", pattern="^pages$")
+    page_id: Optional[int] = Field(default=None, ge=1)
+    book_id: Optional[int] = Field(default=None, ge=1)
+    format: Literal["pdf", "markdown"] = "pdf"
 
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def log_json(level, message, request_id="system", **extra):
-    record = {
-        "timestamp": now_iso(),
-        "level": level,
-        "service": SERVICE,
-        "request_id": request_id,
-        "message": message,
-        **extra
-    }
-    print(json.dumps(record, ensure_ascii=False), flush=True)
-
-
-def get_s3(endpoint=None):
-    if not ACCESS_KEY or not SECRET_KEY:
-        raise RuntimeError("MinIO credentials are not configured")
-
-    return boto3.client(
-        "s3",
-        endpoint_url=endpoint or ENDPOINT,
-        aws_access_key_id=ACCESS_KEY,
-        aws_secret_access_key=SECRET_KEY,
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"}
-        ),
-        region_name="us-east-1"
-    )
-
-
-def bookstack_headers():
-    return {
-        "Authorization": f"Token {TOKEN_ID}:{TOKEN_SECRET}",
-        "Accept": "application/json",
-        "Host": "bookstack.local"
-    }
-
-
-def get_bookstack_client():
-    if not TOKEN_ID or not TOKEN_SECRET:
-        raise RuntimeError("BookStack API credentials are not configured")
-
-    return httpx.Client(
-        verify=VERIFY_TLS,
-        timeout=30,
-        follow_redirects=False
-    )
-
-
-def fetch_bookstack_pages():
-    """Obtiene todas las páginas reales de BookStack usando la API paginada."""
-    records = []
-    page_number = 1
-
-    with get_bookstack_client() as client:
-        while True:
-            response = client.get(
-                f"{BOOKSTACK_URL}/api/pages",
-                params={
-                    "count": PAGE_COUNT,
-                    "page": page_number
-                },
-                headers=bookstack_headers()
-            )
-
-            if response.status_code != 200:
-                raise RuntimeError(
-                    f"BookStack API respondió HTTP {response.status_code}"
-                )
-
-            payload = response.json()
-            pages = payload.get("data", [])
-
-            if not pages:
-                break
-
-            for item in pages:
-                page_id = item.get("id")
-
-                if page_id is None:
-                    continue
-
-                detail = item
-
-                # La lista puede no incluir el HTML completo.
-                if not item.get("html"):
-                    detail_response = client.get(
-                        f"{BOOKSTACK_URL}/api/pages/{page_id}",
-                        headers=bookstack_headers()
-                    )
-
-                    if detail_response.status_code != 200:
-                        raise RuntimeError(
-                            "No se pudo consultar el detalle "
-                            f"de la página {page_id}: "
-                            f"HTTP {detail_response.status_code}"
-                        )
-
-                    detail = detail_response.json()
-
-                records.append({
-                    "id": detail.get("id", page_id),
-                    "name": detail.get("name", item.get("name", "")),
-                    "slug": detail.get("slug", item.get("slug", "")),
-                    "book_id": detail.get(
-                        "book_id",
-                        item.get("book_id")
-                    ),
-                    "chapter_id": detail.get(
-                        "chapter_id",
-                        item.get("chapter_id")
-                    ),
-                    "created_at": detail.get(
-                        "created_at",
-                        item.get("created_at")
-                    ),
-                    "updated_at": detail.get(
-                        "updated_at",
-                        item.get("updated_at")
-                    ),
-                    "url": detail.get("url", item.get("url", "")),
-                    "html": detail.get("html", "")
-                })
-
-            total = payload.get("total")
-
-            if len(pages) < PAGE_COUNT:
-                break
-
-            if total is not None and len(records) >= total:
-                break
-
-            page_number += 1
-
-    return records
-
-
-def generate_export(job):
-    job_id = job["job_id"]
-    request_id = job["request_id"]
-
-    with jobs_lock:
-        job["status"] = "running"
-        job["updated_at"] = now_iso()
-
-    log_json(
-        "INFO",
-        "Exportación iniciada",
-        request_id,
-        job_id=job_id
-    )
-
-    try:
-        records = fetch_bookstack_pages()
-
-        if job["format"] == "csv":
-            buffer = io.StringIO()
-
-            fieldnames = [
-                "id",
-                "name",
-                "slug",
-                "book_id",
-                "chapter_id",
-                "created_at",
-                "updated_at",
-                "url",
-                "html"
-            ]
-
-            writer = csv.DictWriter(
-                buffer,
-                fieldnames=fieldnames,
-                extrasaction="ignore"
-            )
-            writer.writeheader()
-            writer.writerows(records)
-
-            content = buffer.getvalue().encode("utf-8-sig")
-            content_type = "text/csv; charset=utf-8"
-
-        else:
-            content = json.dumps(
-                records,
-                ensure_ascii=False,
-                indent=2
-            ).encode("utf-8")
-            content_type = "application/json"
-
-        object_key = f"exports/{job_id}.{job['format']}"
-
-        s3 = get_s3()
-        s3.put_object(
-            Bucket=BUCKET,
-            Key=object_key,
-            Body=content,
-            ContentType=content_type
-        )
-
-        # La URL prefirmada utiliza la dirección accesible desde
-        # el navegador/host, no el nombre interno del contenedor.
-        public_s3 = get_s3(PUBLIC_ENDPOINT)
-
-        download_url = public_s3.generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": BUCKET,
-                "Key": object_key
-            },
-            ExpiresIn=3600
-        )
-
-        with jobs_lock:
-            job["status"] = "done"
-            job["record_count"] = len(records)
-            job["object_key"] = object_key
-            job["download_url"] = download_url
-            job["updated_at"] = now_iso()
-
-        log_json(
-            "INFO",
-            "Exportación completada",
-            request_id,
-            job_id=job_id,
-            record_count=len(records),
-            object_key=object_key
-        )
-
-    except Exception as exc:
-        with jobs_lock:
-            job["status"] = "failed"
-            job["error"] = str(exc)
-            job["updated_at"] = now_iso()
-
-        log_json(
-            "ERROR",
-            "Exportación fallida",
-            request_id,
-            job_id=job_id,
-            error=str(exc)
-        )
+    @model_validator(mode="after")
+    def exactly_one_target(self):
+        if (self.page_id is None) == (self.book_id is None):
+            raise ValueError("Se debe indicar page_id o book_id (solo uno)")
+        return self
 
 
 app = FastAPI(
     title="Export Service",
-    version="1.1.0"
+    version="2.0.0"
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request: Request, exc: RequestValidationError):
+    # El contrato define 400 para pedidos inválidos (FastAPI usa 422).
+    return JSONResponse(
+        status_code=400,
+        content={"detail": jsonable_errors(exc)}
+    )
+
+
+def jsonable_errors(exc):
+    return [
+        {"loc": list(error.get("loc", [])), "msg": error.get("msg", "")}
+        for error in exc.errors()
+    ]
+
+
+# Bearer (BearerAuth de los contratos). Se registra antes que el middleware
+# de métricas para quedar por dentro: los 401 también se miden y se loguean.
+app.middleware("http")(auth.middleware)
 
 
 @app.middleware("http")
 async def metrics_middleware(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
     start = time.perf_counter()
     status_code = 500
+
+    # Ruta de la plantilla para no crear una serie por cada job_id.
+    path = request.url.path
 
     try:
         response = await call_next(request)
@@ -332,14 +113,16 @@ async def metrics_middleware(request: Request, call_next):
         return response
     finally:
         duration = time.perf_counter() - start
+        route = request.scope.get("route")
+        path = getattr(route, "path", path)
 
         REQUESTS.labels(
             request.method,
-            request.url.path,
+            path,
             str(status_code)
         ).inc()
 
-        DURATION.observe(duration)
+        DURATION.labels(request.method, path).observe(duration)
 
         log_json(
             "INFO",
@@ -352,25 +135,57 @@ async def metrics_middleware(request: Request, call_next):
         )
 
 
+def public_job(job):
+    """Respuesta pública de un job; agrega la URL prefirmada si terminó."""
+    result = {
+        key: job.get(key)
+        for key in (
+            "job_id",
+            "status",
+            "entity_type",
+            "entity_id",
+            "format",
+            "attempts",
+            "worker",
+            "created_at",
+            "updated_at",
+            "completed_at",
+            "request_id",
+        )
+        if job.get(key) not in (None, "")
+    }
+
+    if job.get("error"):
+        result["error"] = job["error"]
+
+    if job.get("status") == "done" and job.get("object_key"):
+        result["object_key"] = job["object_key"]
+        result["download_url"] = presigned_url(job["object_key"])
+        result["expires_in"] = URL_EXPIRES
+
+    return result
+
+
 @app.get("/healthz")
 def healthz():
     return {
         "status": "ok",
-        "service": SERVICE
+        "service": "export-svc"
     }
 
 
 @app.get("/readyz")
 def readyz():
     try:
+        get_redis().ping()
         get_s3().head_bucket(Bucket=BUCKET)
 
-        if not TOKEN_ID or not TOKEN_SECRET:
+        if not credentials.has_token():
             raise RuntimeError("BookStack credentials are missing")
 
         return {
             "status": "ready",
-            "service": SERVICE,
+            "service": "export-svc",
             "bucket": BUCKET
         }
 
@@ -383,6 +198,12 @@ def readyz():
 
 @app.get("/metrics")
 def metrics():
+    try:
+        for name, depth in queue_depths().items():
+            QUEUE_DEPTH.labels(name).set(depth)
+    except Exception:
+        pass
+
     return Response(
         generate_latest(),
         media_type=CONTENT_TYPE_LATEST
@@ -392,48 +213,73 @@ def metrics():
 @app.post("/exports", status_code=202)
 def create_export(data: ExportRequest, request: Request):
     job_id = str(uuid.uuid4())
-    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request_id = request.state.request_id
+    entity_type = "page" if data.page_id else "book"
+    created = now_iso()
+
+    # El worker continúa la traza de esta petición (W3C traceparent).
+    carrier = {}
+    propagate.inject(carrier)
 
     job = {
         "job_id": job_id,
         "status": "queued",
+        "entity_type": entity_type,
+        "entity_id": data.page_id or data.book_id,
         "format": data.format,
-        "entity": data.entity,
+        "attempts": 0,
         "request_id": request_id,
-        "created_at": now_iso(),
-        "updated_at": now_iso()
+        "traceparent": carrier.get("traceparent", ""),
+        "created_at": created,
+        "updated_at": created
     }
 
-    with jobs_lock:
-        jobs[job_id] = job
+    try:
+        enqueue_job(job)
+    except Exception as exc:
+        log_json("ERROR", "No se pudo encolar el job", request_id, error=str(exc))
+        raise HTTPException(status_code=503, detail="Job queue unavailable")
 
-    executor.submit(generate_export, job)
+    JOBS_CREATED.labels(data.format).inc()
+    log_json("INFO", "Job encolado", request_id, job_id=job_id, entity_type=entity_type)
+    events.publish("export.requested", job)
 
     return {
         "job_id": job_id,
         "status": "queued",
-        "status_url": f"/exports/{job_id}"
+        "status_url": f"/v2/exports/{job_id}"
     }
 
 
 @app.get("/exports/{job_id}")
 def get_export(job_id: str):
-    with jobs_lock:
-        job = jobs.get(job_id)
+    try:
+        job = get_job(job_id)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Job store unavailable")
 
-        if job is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Job not found"
-            )
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found"
+        )
 
-        return dict(job)
+    return public_job(job)
 
 
 @app.get("/exports")
-def list_exports():
-    with jobs_lock:
-        return {
-            "count": len(jobs),
-            "items": [dict(job) for job in jobs.values()]
-        }
+def list_exports(limit: int = 50):
+    limit = max(1, min(limit, 200))
+
+    try:
+        r = get_redis()
+        total = r.zcard(JOBS_INDEX)
+        job_ids = r.zrevrange(JOBS_INDEX, 0, limit - 1)
+        items = [job for job in (get_job(job_id) for job_id in job_ids) if job]
+    except Exception:
+        raise HTTPException(status_code=503, detail="Job store unavailable")
+
+    return {
+        "count": total,
+        "items": [public_job(job) for job in items]
+    }
