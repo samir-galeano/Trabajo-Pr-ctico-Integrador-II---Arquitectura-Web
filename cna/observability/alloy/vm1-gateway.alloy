@@ -1,0 +1,41 @@
+// Alloy en VM-1: envía a Loki (VM-2) el access log del gateway api.bookstack.local.
+//
+// Requiere que Nginx escriba el log en JSON con $request_id (ver
+// cna/observability/nginx/log_format.conf) y que UFW de VM-2 permita
+// 3100/tcp solo desde 192.168.100.23.
+//
+// Uso:  LOKI_URL=http://<IP-VM-2>:3100/loki/api/v1/push alloy run vm1-gateway.alloy
+
+local.file_match "gateway" {
+  path_targets = [{
+    "__path__" = "/var/log/nginx/api.bookstack.local.access.log",
+    "service"  = "gateway",
+    "node"     = "vm-1",
+  }]
+}
+
+loki.source.file "gateway" {
+  targets    = local.file_match.gateway.targets
+  forward_to = [loki.process.gateway.receiver]
+}
+
+loki.process "gateway" {
+  stage.json {
+    expressions = {
+      request_id = "request_id",
+      status     = "status",
+    }
+  }
+
+  stage.structured_metadata {
+    values = { request_id = "" }
+  }
+
+  forward_to = [loki.write.vm2.receiver]
+}
+
+loki.write "vm2" {
+  endpoint {
+    url = sys.env("LOKI_URL")
+  }
+}

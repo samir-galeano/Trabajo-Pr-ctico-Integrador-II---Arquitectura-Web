@@ -1,0 +1,49 @@
+# Normaliza las métricas HTTP de los servicios, que tienen nombres y
+# etiquetas distintos (http_requests_total{status_code}, export_http_requests_total{status}, ...),
+# a series comunes por job para el tablero RED.
+# Se excluyen las rutas de sondeo (/metrics, /healthz, /readyz).
+groups:
+  - name: red
+    interval: 10s
+    rules:
+      # R: tasa de peticiones por servicio y código
+      - record: job_code:http_requests:rate1m
+        expr: |
+          sum by (job, code) (
+            label_replace(
+              label_replace(
+                rate({__name__=~"(.+_)?http_requests_total", job!="prometheus", path!~"/metrics|/healthz|/readyz"}[1m]),
+                "code", "$1", "status", "(.+)"
+              ),
+              "code", "$1", "status_code", "(.+)"
+            )
+          )
+
+      - record: job:http_requests:rate1m
+        expr: sum by (job) (job_code:http_requests:rate1m)
+
+      # E: proporción de respuestas 5xx
+      - record: job:http_errors:ratio1m
+        expr: |
+          (
+            sum by (job) (job_code:http_requests:rate1m{code=~"5.."})
+              or sum by (job) (job_code:http_requests:rate1m) * 0
+          )
+            / (sum by (job) (job_code:http_requests:rate1m) > 0)
+
+      # D: percentiles de duración
+      - record: job:http_request_duration_seconds:p50
+        expr: |
+          histogram_quantile(0.50, sum by (job, le) (
+            rate({__name__=~"(.+_)?http_request_duration_seconds_bucket", job!="prometheus", path!~"/metrics|/healthz|/readyz"}[5m])
+          ))
+      - record: job:http_request_duration_seconds:p95
+        expr: |
+          histogram_quantile(0.95, sum by (job, le) (
+            rate({__name__=~"(.+_)?http_request_duration_seconds_bucket", job!="prometheus", path!~"/metrics|/healthz|/readyz"}[5m])
+          ))
+      - record: job:http_request_duration_seconds:p99
+        expr: |
+          histogram_quantile(0.99, sum by (job, le) (
+            rate({__name__=~"(.+_)?http_request_duration_seconds_bucket", job!="prometheus", path!~"/metrics|/healthz|/readyz"}[5m])
+          ))
