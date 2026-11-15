@@ -1,0 +1,514 @@
+# Despliegue en Docker Swarm (B5). No se usa directamente: lo aplica
+#   ./cna/deploy/swarm/deploy.sh
+# que construye las imágenes, las sube al registry del clúster, crea el
+# secreto del token y define GIT_SHA y CONFIG_VERSION.
+#
+# Ubicación de los servicios (etiquetas de nodo, ver deploy.sh):
+#   cna.data=true           bases de datos, NATS, MinIO, Redis (volúmenes locales)
+#   cna.observability=true  Prometheus, Loki, Grafana, Jaeger
+#   sin restricción         servicios sin estado y export-worker (se reparten)
+#   global                  Alloy (un recolector de logs por nodo)
+#
+# Las rutas relativas se resuelven desde esta carpeta.
+
+x-otel: &otel
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+  OTEL_PYTHON_FASTAPI_EXCLUDED_URLS: healthz,readyz,metrics
+
+# Servicios sin estado: reinicio automático y actualización sin corte
+# (la tarea nueva arranca y queda healthy antes de bajar la vieja).
+x-stateless: &stateless
+  restart_policy:
+    condition: any
+    delay: 5s
+  update_config:
+    order: start-first
+    parallelism: 1
+    failure_action: rollback
+    monitor: 30s
+  rollback_config:
+    order: start-first
+
+x-on-data-node: &on-data-node
+  restart_policy:
+    condition: any
+    delay: 5s
+  update_config:
+    order: stop-first
+  placement:
+    constraints:
+      - node.labels.cna.data == true
+
+x-on-observability-node: &on-observability-node
+  restart_policy:
+    condition: any
+    delay: 5s
+  placement:
+    constraints:
+      - node.labels.cna.observability == true
+
+x-token-secret: &token-secret
+  - source: bookstack_token
+    target: bookstack_token
+    uid: "10001"
+    gid: "10001"
+    mode: 0400
+
+services:
+  # ---------------------------------------------------------------- datos
+  search-index-db:
+    image: postgres:16-alpine
+    env_file: ../postgres.env
+    volumes:
+      - search-index-data:/var/lib/postgresql/data
+    networks: [cna-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      <<: *on-data-node
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+
+  audit-db:
+    image: postgres:16-alpine
+    env_file: ../audit-db.env
+    volumes:
+      - audit-db-data:/var/lib/postgresql/data
+    networks: [cna-net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      <<: *on-data-node
+      resources:
+        limits: {cpus: "0.25", memory: 192M}
+
+  nats:
+    image: nats:2-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes:
+      - nats-data:/data
+    networks: [cna-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8222/healthz >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    deploy:
+      <<: *on-data-node
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+
+  minio:
+    image: pgsty/silo:RELEASE.2026-11-12T00-00-00Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    env_file: ../minio/.env
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks: [cna-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      <<: *on-data-node
+      resources:
+        limits: {cpus: "0.50", memory: 512M}
+
+  export-redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "96mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - export-redis-data:/data
+    networks: [cna-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    deploy:
+      <<: *on-data-node
+      resources:
+        limits: {cpus: "0.25", memory: 128M}
+
+  # Tareas de una sola vez (idempotentes). En Swarm no hay depends_on:
+  # reintentan hasta que NATS / MinIO respondan y terminan en "Complete".
+  nats-init:
+    image: ${REGISTRY:-127.0.0.1:5000}/event-bridge:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    command: ["python", "/init/nats_init.py"]
+    environment:
+      NATS_URL: nats://nats:4222
+    configs:
+      - source: nats_init
+        target: /init/nats_init.py
+    networks: [cna-net]
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      resources:
+        limits: {memory: 128M}
+
+  minio-init:
+    image: ${REGISTRY:-127.0.0.1:5000}/export-svc:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    command: ["python", "/init/minio_init.py"]
+    env_file: ../minio/.env
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_BUCKETS: bookstack-exports,bookstack-media
+    configs:
+      - source: minio_init
+        target: /init/minio_init.py
+    networks: [cna-net]
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      resources:
+        limits: {memory: 128M}
+
+  # --------------------------------------------------------- microservicios
+  search-svc:
+    image: ${REGISTRY:-127.0.0.1:5000}/search-svc:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    env_file: ../../services/search-svc/.env
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: search-svc
+      BOOKSTACK_TOKEN_FILE: /run/secrets/bookstack_token
+    secrets: *token-secret
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
+    networks: [cna-net]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      <<: *stateless
+      replicas: 1
+      resources:
+        limits: {cpus: "0.50", memory: 512M}
+
+  event-bridge:
+    image: ${REGISTRY:-127.0.0.1:5000}/event-bridge:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    env_file: ../../services/event-bridge/.env
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: event-bridge
+    ports:
+      - "8001:8001"
+    networks: [cna-net]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      <<: *stateless
+      replicas: 1
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+
+  audit-svc:
+    image: ${REGISTRY:-127.0.0.1:5000}/audit-svc:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    env_file: ../../services/audit-svc/.env
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: audit-svc
+    ports:
+      - "8002:8002"
+    networks: [cna-net]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/healthz')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      <<: *stateless
+      replicas: 1
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+
+  export-svc:
+    image: ${REGISTRY:-127.0.0.1:5000}/export-svc:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    env_file: ../../services/export-svc/.env
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: export-svc
+      BOOKSTACK_TOKEN_FILE: /run/secrets/bookstack_token
+    secrets: *token-secret
+    ports:
+      - "8003:8003"
+    extra_hosts:
+      - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
+    networks: [cna-net]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      <<: *stateless
+      replicas: 1
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+
+  # Se reparte entre los nodos. endpoint_mode dnsrr: el nombre
+  # "export-worker" resuelve a la IP de cada réplica (Prometheus las
+  # descubre una por una, igual que con Compose).
+  export-worker:
+    image: ${REGISTRY:-127.0.0.1:5000}/export-svc:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    command: ["opentelemetry-instrument", "python", "-m", "app.worker"]
+    env_file: ../../services/export-svc/.env
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: export-worker
+      BOOKSTACK_TOKEN_FILE: /run/secrets/bookstack_token
+      EXPORT_SIMULATED_DELAY: "0"
+    secrets: *token-secret
+    extra_hosts:
+      - "bookstack.local:${BOOKSTACK_HOST_IP:-192.168.100.23}"
+    networks: [cna-net]
+    read_only: true
+    tmpfs: [/tmp]
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9101/metrics')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      <<: *stateless
+      replicas: ${EXPORT_WORKERS:-1}
+      endpoint_mode: dnsrr
+      # Reparte las réplicas entre los nodos (sin bloquear si hay uno solo)
+      placement:
+        preferences:
+          - spread: node.id
+      resources:
+        limits: {cpus: "0.25", memory: 192M}
+
+  media-svc:
+    image: ${REGISTRY:-127.0.0.1:5000}/media-svc:2.0.0-${GIT_SHA:?definir GIT_SHA}
+    env_file: ../../services/media-svc/.env
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: media-svc
+    ports:
+      - "8004:8004"
+    networks: [cna-net]
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    deploy:
+      <<: *stateless
+      replicas: 1
+      resources:
+        limits: {cpus: "0.25", memory: 256M}
+
+  # --------------------------------------------------------- observabilidad
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    configs:
+      - source: prometheus_yml
+        target: /etc/prometheus/prometheus.yml
+      - source: prometheus_recording
+        target: /etc/prometheus/rules/recording.yml
+      - source: prometheus_alerts
+        target: /etc/prometheus/rules/alerts.yml
+    volumes:
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [cna-net]
+    deploy:
+      <<: *on-observability-node
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:0.17.3
+    command: ["-varz", "-connz", "-jsz=all", "http://nats:8222"]
+    networks: [cna-net]
+    deploy:
+      <<: *stateless
+      resources:
+        limits: {cpus: "0.10", memory: 64M}
+
+  loki:
+    image: grafana/loki:3.5.5
+    command: ["-config.file=/etc/loki/loki.yml"]
+    configs:
+      - source: loki_yml
+        target: /etc/loki/loki.yml
+    volumes:
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks: [cna-net]
+    deploy:
+      <<: *on-observability-node
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+
+  # Un recolector por nodo: cada uno lee los logs de los contenedores locales.
+  alloy:
+    image: grafana/alloy:v1.11.0
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+    environment:
+      NODE_NAME: "{{.Node.Hostname}}"
+    configs:
+      - source: alloy_config
+        target: /etc/alloy/config.alloy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    networks: [cna-net]
+    deploy:
+      mode: global
+      restart_policy:
+        condition: any
+        delay: 5s
+      resources:
+        limits: {cpus: "0.25", memory: 192M}
+
+  jaeger:
+    image: jaegertracing/jaeger:2.10.0
+    ports:
+      - "16686:16686"
+    networks: [cna-net]
+    deploy:
+      <<: *on-observability-node
+      resources:
+        limits: {cpus: "0.50", memory: 384M}
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    env_file: ../../observability/grafana.env
+    environment:
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/cna-red.json
+    configs:
+      - source: grafana_datasources
+        target: /etc/grafana/provisioning/datasources/datasources.yml
+      - source: grafana_dashboards
+        target: /etc/grafana/provisioning/dashboards/dashboards.yml
+      - source: grafana_dashboard_red
+        target: /var/lib/grafana/dashboards/cna-red.json
+    volumes:
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks: [cna-net]
+    deploy:
+      <<: *on-observability-node
+      resources:
+        limits: {cpus: "0.50", memory: 256M}
+
+# Los configs son inmutables en Swarm: deploy.sh calcula CONFIG_VERSION a
+# partir del contenido, así un cambio crea configs nuevos en lugar de fallar.
+configs:
+  nats_init:
+    name: cna_nats_init_${CONFIG_VERSION:?}
+    file: ../init/nats_init.py
+  minio_init:
+    name: cna_minio_init_${CONFIG_VERSION:?}
+    file: ../init/minio_init.py
+  prometheus_yml:
+    name: cna_prometheus_yml_${CONFIG_VERSION:?}
+    file: ../../observability/prometheus/prometheus.yml
+  prometheus_recording:
+    name: cna_prometheus_recording_${CONFIG_VERSION:?}
+    file: ../../observability/prometheus/rules/recording.yml
+  prometheus_alerts:
+    name: cna_prometheus_alerts_${CONFIG_VERSION:?}
+    file: ../../observability/prometheus/rules/alerts.yml
+  loki_yml:
+    name: cna_loki_yml_${CONFIG_VERSION:?}
+    file: ../../observability/loki/loki.yml
+  alloy_config:
+    name: cna_alloy_config_${CONFIG_VERSION:?}
+    file: ../../observability/alloy/config.alloy
+  grafana_datasources:
+    name: cna_grafana_datasources_${CONFIG_VERSION:?}
+    file: ../../observability/grafana/provisioning/datasources/datasources.yml
+  grafana_dashboards:
+    name: cna_grafana_dashboards_${CONFIG_VERSION:?}
+    file: ../../observability/grafana/provisioning/dashboards/dashboards.yml
+  grafana_dashboard_red:
+    name: cna_grafana_dashboard_red_${CONFIG_VERSION:?}
+    file: ../../observability/grafana/dashboards/cna-red.json
+
+# Token de la API de BookStack como Docker secret. deploy.sh lo crea a partir
+# del .env; rotate-bookstack-token.sh crea uno nuevo (_v2, _v3...) y lo
+# cambia con una actualización rodante sin corte.
+secrets:
+  bookstack_token:
+    external: true
+    name: ${BOOKSTACK_TOKEN_SECRET:-bookstack_token_v1}
+
+# Los volúmenes de datos usan los mismos nombres que en Compose: al pasar a
+# Swarm en el mismo nodo se reutilizan los datos existentes.
+volumes:
+  search-index-data:
+    name: search-index-data
+  audit-db-data:
+    name: audit-db-data
+  nats-data:
+    name: nats-data
+  minio-data:
+    name: minio-data
+  export-redis-data:
+    name: export-redis-data
+  prometheus-data:
+  loki-data:
+  alloy-data:
+  grafana-data:
+
+networks:
+  cna-net:
+    driver: overlay
+    attachable: true

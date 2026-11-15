@@ -22,3 +22,7 @@ cna/services/export-svc/.env
 /compose.yaml.respaldo
 *.bak
 /compose.yaml.backup-ca7
+
+# Token de BookStack rotable (solo se versiona la carpeta)
+cna/deploy/secrets/*
+!cna/deploy/secrets/.gitkeep
